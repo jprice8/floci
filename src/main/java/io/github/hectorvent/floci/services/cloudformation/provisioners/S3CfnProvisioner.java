@@ -674,9 +674,12 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
         s3Service.putBucketPolicy(bucketName, policy);
         // A policy that moves to another bucket, as one does when its bucket is replaced, is replaced
         // with it: the document leaves the old bucket once the update commits, or the new one if the
-        // update rolls back. One whose previous template named no bucket took its logical id and put
-        // nothing anywhere; the logical id alone cannot tell, since it may also be a bucket's name.
-        boolean replaced = ctx.isUpdate() && !ctx.reusesPriorEntity(bucketName) && ctx.previouslyDeclared("Bucket");
+        // update rolls back. The previous template tells whether a document was put under the prior
+        // id: one that named no bucket, or declared no document, put none, and the logical id such a
+        // policy takes cannot tell, as it may also be a bucket's name. AWS requires both properties;
+        // a Bucket that resolved blank, which AWS also rejects, is not told apart.
+        boolean replaced = ctx.isUpdate() && !ctx.reusesPriorEntity(bucketName)
+                && ctx.previouslyDeclared("Bucket") && ctx.previouslyDeclared("PolicyDocument");
         ReplacementCleanup.record(r, ctx, attributesBefore, replaced);
     }
 

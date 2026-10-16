@@ -954,7 +954,7 @@ class S3CfnProvisionerTest {
 
     private ProvisionContext policyMoveContext() {
         return new ProvisionContext(ctx.engine(), REGION, "000000000000", "my-stack", "old", event -> { },
-                props("{\"Bucket\": \"old\"}"));
+                props("{\"Bucket\": \"old\", \"PolicyDocument\": {\"Version\": \"2012-10-17\"}}"));
     }
 
     private StackResource policyMovedToNew() {
@@ -1007,7 +1007,7 @@ class S3CfnProvisionerTest {
         provisioner.provision(r, props("""
                 {"Bucket": "logs2", "PolicyDocument": {"Version": "2012-10-17"}}
                 """), new ProvisionContext(ctx.engine(), REGION, "000000000000", "my-stack", "logs", event -> { },
-                props("{\"Bucket\": \"logs\"}")));
+                props("{\"Bucket\": \"logs\", \"PolicyDocument\": {\"Version\": \"2012-10-17\"}}")));
 
         assertEquals("logs2", r.getPhysicalId());
         assertTrue(provisioner.hasReplacementUpdate(r));
@@ -1030,6 +1030,26 @@ class S3CfnProvisionerTest {
 
         assertEquals("b", r.getPhysicalId());
         assertFalse(provisioner.hasReplacementUpdate(r));
+        verify(s3, never()).deleteBucketPolicy(anyString());
+    }
+
+    /**
+     * A previous template that declared no document put none on its bucket, which AWS would have
+     * refused, so a move has nothing to take off that bucket: a document there is someone else's.
+     */
+    @Test
+    void aPolicyWhosePreviousTemplateDeclaredNoDocumentDisplacesNothing() {
+        StackResource r = resource("Policy", "AWS::S3::BucketPolicy");
+        r.setPhysicalId("shared");
+
+        provisioner.provision(r, props("""
+                {"Bucket": "mine", "PolicyDocument": {"Version": "2012-10-17"}}
+                """), new ProvisionContext(ctx.engine(), REGION, "000000000000", "my-stack", "shared", event -> { },
+                props("{\"Bucket\": \"shared\"}")));
+
+        assertEquals("mine", r.getPhysicalId());
+        assertFalse(provisioner.hasReplacementUpdate(r));
+        commit(r);
         verify(s3, never()).deleteBucketPolicy(anyString());
     }
 }
