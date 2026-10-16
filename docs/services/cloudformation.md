@@ -163,9 +163,9 @@ Giving `BucketName` a new value replaces the bucket, as on AWS:
 - The new bucket is created first, and the resources that reference the bucket, such as an
   `AWS::S3::BucketPolicy` or a stack output, are updated to name it.
 - The old bucket is deleted once the update commits, unless `UpdateReplacePolicy` is `Retain`;
-  `DeletionPolicy` applies to stack deletion, not to a replacement. As on AWS, a bucket that still
-  holds objects cannot be deleted: the update completes, reports `DELETE_FAILED` for the old bucket
-  and leaves it outside the stack.
+  `DeletionPolicy` applies to stack deletion and to removal from the template, not to a
+  replacement. As on AWS, a bucket that still holds objects cannot be deleted: the update completes,
+  reports `DELETE_FAILED` for the old bucket and leaves it outside the stack.
 - A bucket policy that follows its bucket is replaced too: its document is removed from the old
   bucket once the update commits, unless the policy's own `UpdateReplacePolicy` is `Retain`.
 - When a later resource fails the update, the rollback deletes the new bucket and points the stack at
@@ -176,15 +176,18 @@ Giving `BucketName` a new value replaces the bucket, as on AWS:
   skip the bucket, and the next committed update or the stack delete removes the new bucket.
 - A new name the account already owns fails the update with `BucketAlreadyOwnedByYou`, in
   `us-east-1` too, where S3's own `CreateBucket` answers that request with success, so a rename
-  never adopts a bucket it did not create. A stack create, or a bucket an update adds, still takes
-  over an owned bucket of that name in `us-east-1`.
+  never adopts a bucket it did not create.
 - Deleting a bucket that is already gone counts as deleted.
 
-Known differences: removing an explicit `BucketName` keeps the bucket under that name, where AWS
-replaces it with one under a generated name; and the new bucket of a failed update is deleted while
-the stack rolls back, so a delete that fails ends the rollback in `UPDATE_ROLLBACK_FAILED`, where AWS
-deletes new resources in `UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS`, after the stack has rolled
-back.
+Known differences:
+
+- Removing an explicit `BucketName` keeps the bucket under that name, where AWS replaces it with one
+  under a generated name.
+- The new bucket of a failed update is deleted while the stack rolls back, so a delete that fails
+  ends the rollback in `UPDATE_ROLLBACK_FAILED`, where AWS deletes new resources in
+  `UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS`, after the stack has rolled back.
+- A stack create, or a bucket an update adds, takes over a bucket of that name the account already
+  owns in `us-east-1`, where AWS reports that the bucket already exists.
 
 ## Supported Resource Types
 
