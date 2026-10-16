@@ -879,7 +879,7 @@ class S3CfnProvisionerTest {
         assertTrue(provisioner.rollbackUpdate(r));
         verify(s3).restoreBucketConfiguration("old", "snapshot");
         verify(s3, times(1)).deleteBucket("new");
-        assertTrue(provisioner.hasReplacementUpdate(r));
+        assertEquals("new", provisioner.updateCleanupPhysicalId(r));
     }
 
     /**

@@ -89,8 +89,8 @@ class CloudFormationS3BucketReplacementIntegrationTest {
 
         deploy("UpdateStack", stack, template(replacement, null, null, Map.of(), true));
 
-        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal(stack);
-        assertEquals("UPDATE_ROLLBACK_COMPLETE", state.status(), state.reason());
+        // The stack reports UPDATE_FAILED for a moment before it rolls back, so the rollback is waited out.
+        CfnStackWaits.awaitStatus(stack, "UPDATE_ROLLBACK_COMPLETE");
         assertBucket(replacement, false);
         given().get("/" + original + "/document").then().statusCode(200).body(equalTo("kept document"));
         given().get("/" + original + "?policy").then().statusCode(200)
@@ -102,7 +102,7 @@ class CloudFormationS3BucketReplacementIntegrationTest {
         // The rollback left nothing behind that a later rename would trip over.
         given().delete("/" + original + "/document").then().statusCode(204);
         deploy("UpdateStack", stack, template(replacement, null, null, Map.of(), false));
-        state = CfnStackWaits.awaitTerminal(stack);
+        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal(stack);
         assertEquals("UPDATE_COMPLETE", state.status(), state.reason());
         assertBucket(original, false);
         assertBucket(replacement, true);
@@ -131,8 +131,7 @@ class CloudFormationS3BucketReplacementIntegrationTest {
 
         deploy("UpdateStack", stack, template(taken, null, null, Map.of(), false));
 
-        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal(stack);
-        assertEquals("UPDATE_ROLLBACK_COMPLETE", state.status(), state.reason());
+        CfnStackWaits.awaitStatus(stack, "UPDATE_ROLLBACK_COMPLETE");
         assertEquals("Your previous request to create the named bucket succeeded and you already own it.",
                 updateFailure(stack, "Bucket"));
         given().get("/" + taken + "/document").then().statusCode(200).body(equalTo("not the stack's"));
@@ -188,8 +187,7 @@ class CloudFormationS3BucketReplacementIntegrationTest {
         deploy("UpdateStack", stack, template(replacement, null, null,
                 Map.of("VersioningConfiguration", Map.of("Status", "Bogus")), false));
 
-        CfnStackWaits.StackState state = CfnStackWaits.awaitTerminal(stack);
-        assertEquals("UPDATE_ROLLBACK_COMPLETE", state.status(), state.reason());
+        CfnStackWaits.awaitStatus(stack, "UPDATE_ROLLBACK_COMPLETE");
         assertBucket(replacement, false);
         assertBucket(original, true);
         assertEquals(Map.of("Bucket", original, "Policy", original), physicalIds(stack));
