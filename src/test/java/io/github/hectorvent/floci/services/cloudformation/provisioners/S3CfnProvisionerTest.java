@@ -998,6 +998,25 @@ class S3CfnProvisionerTest {
         assertFalse(provisioner.hasReplacementUpdate(r));
     }
 
+    /** A logical id can be a bucket name too: the previous template says where the document was. */
+    @Test
+    void aPolicyWhoseLogicalIdNamesItsBucketIsReplacedWhenItMoves() {
+        StackResource r = resource("logs", "AWS::S3::BucketPolicy");
+        r.setPhysicalId("logs");
+
+        provisioner.provision(r, props("""
+                {"Bucket": "logs2", "PolicyDocument": {"Version": "2012-10-17"}}
+                """), new ProvisionContext(ctx.engine(), REGION, "000000000000", "my-stack", "logs", event -> { },
+                props("{\"Bucket\": \"logs\"}")));
+
+        assertEquals("logs2", r.getPhysicalId());
+        assertTrue(provisioner.hasReplacementUpdate(r));
+        assertEquals("logs", provisioner.updateCleanupPhysicalId(r));
+        assertTrue(provisioner.rollbackUpdate(r));
+        assertEquals("logs", r.getPhysicalId());
+        verify(s3).deleteBucketPolicy("logs2");
+    }
+
     /** A policy that named no bucket took its logical id and put nothing anywhere, so it displaces nothing. */
     @Test
     void aPolicyThatNamedNoBucketDisplacesNothing() {
@@ -1006,9 +1025,11 @@ class S3CfnProvisionerTest {
 
         provisioner.provision(r, props("""
                 {"Bucket": "b", "PolicyDocument": {"Version": "2012-10-17"}}
-                """), new ProvisionContext(ctx.engine(), REGION, "000000000000", "my-stack", "Policy"));
+                """), new ProvisionContext(ctx.engine(), REGION, "000000000000", "my-stack", "Policy", event -> { },
+                props("{\"PolicyDocument\": {\"Version\": \"2012-10-17\"}}")));
 
         assertEquals("b", r.getPhysicalId());
         assertFalse(provisioner.hasReplacementUpdate(r));
+        verify(s3, never()).deleteBucketPolicy(anyString());
     }
 }
