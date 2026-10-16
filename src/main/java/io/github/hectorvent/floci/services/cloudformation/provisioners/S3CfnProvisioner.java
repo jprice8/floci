@@ -19,7 +19,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -36,6 +38,12 @@ import java.util.Set;
  * {@code OwnershipControls}, {@code NotificationConfiguration} and
  * {@code Tags}. {@code NotificationConfiguration} is the exception to the XML translation: its
  * service method takes the parsed model, so the provisioner builds that model instead.
+ *
+ * <p>Changing {@code BucketName} replaces the bucket, as on AWS: the new bucket is created first, and
+ * the displaced one is left to the {@link ReplacementCleanup} record, deleted once the stack update
+ * commits unless {@code UpdateReplacePolicy} is {@code Retain}, or named again when the update rolls
+ * back, which deletes the new one. A policy that follows its bucket to the replacement is replaced the
+ * same way. A new name the account already owns fails the update.
  *
  * <p><b>Silently dropped</b>, each of which has a service method waiting for it:
  * {@code WebsiteConfiguration}, {@code LoggingConfiguration},
@@ -80,6 +88,14 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
     }
 
     private void provisionBucket(StackResource r, JsonNode props, ProvisionContext ctx) {
+        // A snapshot describes the update in flight; one an earlier update left behind is stale.
+        r.getAttributes().remove(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR);
+        if (ctx.isUpdate()) {
+            // Rolling this update back undoes it alone; only ContinueUpdateRollback retries the
+            // delete the last rollback could not make.
+            ReplacementCleanup.endRollbackRetry(r);
+        }
+        Map<String, String> attributesBefore = new HashMap<>(r.getAttributes());
         String bucketName = ctx.stablePhysicalName(ctx.resolveOptional(props, "BucketName"),
                 r.getLogicalId(), BUCKET_NAME_MAX_LENGTH, true);
         // provision is also the update path. CreateBucket on a bucket this account already owns is
@@ -88,7 +104,6 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
         // and only reconcile the bucket's configuration. A replacing update derives a different
         // name and still creates, hence reusesPriorEntity rather than isUpdate.
         Unwind unwind = new Unwind();
-        r.getAttributes().remove(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR);
         try {
             // Built before anything is created, so a configuration that fails validation creates nothing.
             NotificationConfiguration notifications = notificationConfiguration(props, ctx);
@@ -101,6 +116,14 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
                 // In us-east-1 CreateBucket also answers for a bucket the account already owns,
                 // which this resource must never delete.
                 boolean owned = s3Service.ownsBucket(bucketName);
+                if (owned && ctx.isUpdate()) {
+                    // A rename would adopt that bucket, rewrite its configuration and delete it as the
+                    // stack's own once the update rolls back. CreateBucket refuses it in every other
+                    // region, and so does the rename.
+                    throw new AwsException("BucketAlreadyOwnedByYou",
+                            "Your previous request to create the named bucket succeeded and you already own it.",
+                            409);
+                }
                 s3Service.createBucket(bucketName, ctx.region());
                 unwind.created = !owned;
             }
@@ -138,6 +161,7 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
         }
         r.getAttributes().put("WebsiteURL", AwsEndpoints.s3WebsiteUrl(bucketName, ctx.region()));
         r.getAttributes().put("BucketName", bucketName);
+        ReplacementCleanup.record(r, ctx, attributesBefore);
     }
 
     private void applyBucketCorsConfiguration(String bucketName, JsonNode props, ProvisionContext ctx) {
@@ -290,7 +314,7 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
             if (unwind.created) {
                 s3Service.deleteBucket(bucketName);
             } else if (r.getAttributes().containsKey(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR)) {
-                rollbackUpdate(r);
+                restoreSnapshot(r);
             } else if (unwind.replacedNotifications != null) {
                 // Valid when it was put; its destinations are not checked again on the way back.
                 s3Service.putBucketNotificationConfiguration(bucketName, unwind.replacedNotifications, true);
@@ -298,18 +322,34 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
         } catch (RuntimeException e) {
             LOG.warnv("Could not undo the failed provision of bucket {0}: {1}", bucketName, e.getMessage());
             failure.addSuppressed(e);
-            if (ctx.isUpdate()) {
+            if (ctx.isUpdate() && unwind.created) {
+                // The engine restores the previous resource and keeps only what the cleanup record
+                // carries, so the replacement is listed there for the next cleanup to delete.
+                ReplacementCleanup.recordOrphan(r, bucketName, BUCKET, ctx.region());
+                r.getAttributes().put(CfnRollback.UPDATE_ROLLBACK_FAILURE_ATTR, "Could not remove bucket "
+                        + bucketName + ", created for " + r.getLogicalId() + " by a failed update: " + e.getMessage());
+            } else if (ctx.isUpdate()) {
                 r.getAttributes().put(CfnRollback.UPDATE_ROLLBACK_FAILURE_ATTR,
                         "Could not restore bucket " + bucketName + ": " + e.getMessage());
             }
         }
     }
 
+    /**
+     * A replacement, of a bucket or of a policy that followed its bucket, is undone through the
+     * cleanup record: the resource names the original again and the replacement is deleted. A bucket
+     * updated in place is put back from the snapshot taken before the update changed it.
+     */
     @Override
     public boolean rollbackUpdate(StackResource resource) {
-        if (!BUCKET.equals(resource.getResourceType())) {
-            return false;
+        if (ReplacementCleanup.rollback(resource, this::delete)) {
+            return true;
         }
+        return BUCKET.equals(resource.getResourceType()) && restoreSnapshot(resource);
+    }
+
+    /** Puts back the configuration an update in place snapshotted, then spends the snapshot. */
+    private boolean restoreSnapshot(StackResource resource) {
         String snapshot = resource.getAttributes().get(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR);
         if (snapshot == null) {
             return false;
@@ -320,15 +360,30 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
     }
 
     @Override
+    public boolean hasReplacementUpdate(StackResource resource) {
+        return ReplacementCleanup.hasReplacement(resource);
+    }
+
+    @Override
+    public String updateCleanupPhysicalId(StackResource resource) {
+        return ReplacementCleanup.cleanupPhysicalId(resource);
+    }
+
+    /**
+     * The engine calls this for every resource once a stack update commits, but {@link #clearUpdate}
+     * only after a replacement's cleanup, so an update in place drops its snapshot here: the update
+     * committed and nothing will roll it back.
+     */
+    @Override
     public UpdateCleanupResult completeUpdate(StackResource resource) {
-        return resource.getAttributes().containsKey(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR)
-                ? new UpdateCleanupResult(true, true, null, 0, null)
-                : UpdateCleanupResult.notApplicable();
+        resource.getAttributes().remove(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR);
+        return ReplacementCleanup.complete(resource, this::delete);
     }
 
     @Override
     public void clearUpdate(StackResource resource) {
         resource.getAttributes().remove(CfnRollback.S3_BUCKET_UPDATE_SNAPSHOT_ATTR);
+        ReplacementCleanup.clear(resource);
     }
 
     private static boolean sameConfiguration(NotificationConfiguration desired, NotificationConfiguration current) {
@@ -597,6 +652,10 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
      * no {@code readOnlyProperties}, so it has no {@code Fn::GetAtt} and none is invented here.
      */
     private void provisionBucketPolicy(StackResource r, JsonNode props, ProvisionContext ctx) {
+        if (ctx.isUpdate()) {
+            ReplacementCleanup.endRollbackRetry(r);
+        }
+        Map<String, String> attributesBefore = new HashMap<>(r.getAttributes());
         String bucketName = ctx.resolveOptional(props, "Bucket");
         JsonNode document = declared(props, "PolicyDocument");
         if (bucketName == null || bucketName.isBlank()) {
@@ -613,14 +672,22 @@ public class S3CfnProvisioner implements CfnResourceProvisioner {
                 ? document.asText()
                 : ctx.engine().resolveNode(document).toString();
         s3Service.putBucketPolicy(bucketName, policy);
+        // A policy that moves to another bucket, as one does when its bucket is replaced, is replaced
+        // with it: the document leaves the old bucket once the update commits, or the new one if the
+        // update rolls back. One that named no bucket took its logical id and put nothing anywhere.
+        boolean replaced = ctx.isUpdate() && !ctx.reusesPriorEntity(bucketName)
+                && !r.getLogicalId().equals(ctx.priorPhysicalId());
+        ReplacementCleanup.record(r, ctx, attributesBefore, replaced);
     }
 
     @Override
     public void delete(String resourceType, String physicalId, String region) {
         if (BUCKET.equals(resourceType)) {
-            // Deleting a non-empty bucket raises BucketNotEmpty, which propagates so the stack
-            // reports DELETE_FAILED as AWS does.
-            s3Service.deleteBucket(physicalId);
+            // NoSuchBucket is S3's code for a bucket that is already gone. Deleting a non-empty
+            // bucket raises BucketNotEmpty, which propagates so the stack reports DELETE_FAILED as
+            // AWS does.
+            CfnDeletes.safeDelete("S3 bucket", physicalId, () -> s3Service.deleteBucket(physicalId),
+                    "NoSuchBucket");
             return;
         }
         if (BUCKET_POLICY.equals(resourceType)) {
