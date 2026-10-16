@@ -158,21 +158,27 @@ rollback repeats the existence check and likely ends in `UPDATE_ROLLBACK_FAILED`
 
 ## S3 buckets
 
-Giving `BucketName` a new value replaces the bucket, as on AWS. The new bucket is created first, and
-the resources that reference the bucket, such as an `AWS::S3::BucketPolicy` or a stack output, are
-updated to name it. The old bucket is deleted once the update commits, unless `UpdateReplacePolicy` is
-`Retain`; `DeletionPolicy` applies to stack deletion, not to a replacement. As on AWS, a bucket that
-still holds objects cannot be deleted: the update completes, reports `DELETE_FAILED` for the old
-bucket and leaves it outside the stack. A bucket policy that follows its bucket is replaced too, so
-its document is removed from the old bucket once the update commits.
+Giving `BucketName` a new value replaces the bucket, as on AWS:
 
-When a later resource fails the update, the rollback deletes the new bucket and points the stack at
-the original again, whose objects and configuration the update never touched. A delete that fails
-during the rollback leaves the stack in `UPDATE_ROLLBACK_FAILED`, and `ContinueUpdateRollback`
-retries it (see [Failed update rollbacks](#failed-update-rollbacks)). A new name the account already
-owns fails the update with `BucketAlreadyOwnedByYou`, in `us-east-1` too, where S3's own
-`CreateBucket` answers that request with success, so the stack never adopts or deletes a bucket it
-did not create. Deleting a bucket that is already gone counts as deleted.
+- The new bucket is created first, and the resources that reference the bucket, such as an
+  `AWS::S3::BucketPolicy` or a stack output, are updated to name it.
+- The old bucket is deleted once the update commits, unless `UpdateReplacePolicy` is `Retain`;
+  `DeletionPolicy` applies to stack deletion, not to a replacement. As on AWS, a bucket that still
+  holds objects cannot be deleted: the update completes, reports `DELETE_FAILED` for the old bucket
+  and leaves it outside the stack.
+- A bucket policy that follows its bucket is replaced too: its document is removed from the old
+  bucket once the update commits, unless the policy's own `UpdateReplacePolicy` is `Retain`.
+- When a later resource fails the update, the rollback deletes the new bucket and points the stack at
+  the original again, whose objects and configuration the update never touched. A delete that fails
+  leaves the stack in `UPDATE_ROLLBACK_FAILED`, and `ContinueUpdateRollback` retries it (see
+  [Failed update rollbacks](#failed-update-rollbacks)). A new bucket that fails its own
+  configuration is deleted at once instead; if that delete fails, `ContinueUpdateRollback` has to
+  skip the bucket, and the next committed update or the stack delete removes the new bucket.
+- A new name the account already owns fails the update with `BucketAlreadyOwnedByYou`, in
+  `us-east-1` too, where S3's own `CreateBucket` answers that request with success, so a rename
+  never adopts a bucket it did not create. A stack create, or a bucket an update adds, still takes
+  over an owned bucket of that name in `us-east-1`.
+- Deleting a bucket that is already gone counts as deleted.
 
 Known differences: removing an explicit `BucketName` keeps the bucket under that name, where AWS
 replaces it with one under a generated name; and the new bucket of a failed update is deleted while
