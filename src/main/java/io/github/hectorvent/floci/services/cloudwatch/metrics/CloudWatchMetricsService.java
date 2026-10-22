@@ -47,6 +47,8 @@ public class CloudWatchMetricsService {
     private static final Logger LOG = Logger.getLogger(CloudWatchMetricsService.class);
     /** The limit AWS puts on the distinct alarms one composite alarm's rule can reference. */
     private static final int MAX_CHILD_ALARMS = 100;
+    /** The length AWS documents as the most an alarm's StateReasonData can hold. */
+    private static final int MAX_STATE_REASON_DATA = 4000;
     private static final Set<String> ALARM_TYPES = Set.of("CompositeAlarm", "LogAlarm", "MetricAlarm");
     /** "Friday 04 August, 2023 12:54:46 UTC", as in a composite alarm's StateReason. */
     private static final DateTimeFormatter REASON_TIME = DateTimeFormatter
@@ -677,6 +679,7 @@ public class CloudWatchMetricsService {
      * alarms whose own condition agrees with the new state, newest state first. On a create or
      * update that is every such child; on a child's transition only those among
      * {@code changedChildren}, the children that changed since the alarm last changed state.
+     * Only the newest children that fit within the documented length are listed.
      */
     private static String triggeringAlarms(CompositeAlarmRule rule, AlarmIndex alarms, String state,
                                            List<String> changedChildren) {
@@ -702,6 +705,10 @@ public class CloudWatchMetricsService {
             entry.put("arn", child.getAlarmArn());
             entry.putObject("state").put("value", child.getStateValue())
                     .put("timestamp", REASON_DATA_TIME.format(Instant.ofEpochSecond(child.lastTransitionTimestamp())));
+            if (data.toString().length() > MAX_STATE_REASON_DATA) {
+                list.remove(list.size() - 1);
+                break;
+            }
         }
         return data.toString();
     }

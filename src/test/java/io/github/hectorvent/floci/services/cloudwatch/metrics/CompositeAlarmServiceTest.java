@@ -317,6 +317,17 @@ class CompositeAlarmServiceTest {
     }
 
     @Test
+    void stateReasonDataStaysWithinItsDocumentedLimitForTheWidestRule() throws Exception {
+        IntStream.range(0, 100).forEach(index -> metric("wide-child-with-a-long-descriptive-name-" + index));
+        composite("wide", IntStream.range(0, 100).mapToObj(index -> "ALARM(wide-child-with-a-long-descriptive-name-"
+                + index + ")").collect(Collectors.joining(" OR ")));
+        String data = composite("wide").getStateReasonData();
+        assertTrue(data.length() <= 4000, "StateReasonData is " + data.length() + " characters");
+        int listed = MAPPER.readTree(data).path("triggeringAlarms").size();
+        assertTrue(listed > 0 && listed < 100, listed + " children listed");
+    }
+
+    @Test
     void namesAndRulesAreValidatedBeforeAnythingIsStored() {
         assertRejected("1 validation error detected: Value null at 'alarmName' failed to satisfy constraint: "
                 + "Member must not be null", () -> composite(null, "TRUE"));

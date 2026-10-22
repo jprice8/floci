@@ -426,7 +426,8 @@ with the token and position (`Error in AlarmRule [Unsupported token ...]`).
 A new composite alarm is evaluated at once. It is evaluated again when one of its children
 changes state, and when it is updated; an update keeps its state and tags (`Tags` apply on create
 only). `StateReason`, `StateReasonData` (`triggeringAlarms`) and
-`StateTransitionedTimestamp` follow AWS. A state set with `SetAlarmState` holds until a child
+`StateTransitionedTimestamp` follow AWS; `StateReasonData` lists the newest triggering children
+that fit in its documented 4000 characters. A state set with `SetAlarmState` holds until a child
 changes state. Alarms on a cycle of composite alarms are not evaluated.
 
 `DescribeAlarms` returns composite alarms only when `AlarmTypes` includes `CompositeAlarm`.
