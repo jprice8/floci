@@ -252,8 +252,9 @@ final class CompositeAlarmRule {
                     List.copyOf(members));
         }
 
-        /** An alarm name or ARN: double-quoted with backslash escapes, or a run without spaces,
-         * round brackets, commas or quotes. */
+        /** An alarm name or ARN: double-quoted, where a backslash escapes a quote or another
+         * backslash and is kept before anything else, or a run without spaces, round brackets,
+         * commas or quotes. */
         private String name() {
             skipWhitespace();
             if (position >= input.length()) {
@@ -274,7 +275,8 @@ final class CompositeAlarmRule {
                 if (next == '"') {
                     return name.toString();
                 }
-                if (next == '\\' && position < input.length()) {
+                if (next == '\\' && position < input.length()
+                        && (input.charAt(position) == '"' || input.charAt(position) == '\\')) {
                     next = input.charAt(position++);
                 }
                 name.append(next);

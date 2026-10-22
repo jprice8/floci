@@ -71,6 +71,14 @@ class CompositeAlarmRuleTest {
     }
 
     @Test
+    void aBackslashOnlyEscapesAQuoteOrABackslash() {
+        assertEquals(List.of("a\\b"), CompositeAlarmRule.parse("ALARM(\"a\\b\")").references());
+        assertEquals(List.of("a\\b"), CompositeAlarmRule.parse("ALARM(\"a\\\\b\")").references());
+        assertEquals(List.of("a\"b"), CompositeAlarmRule.parse("ALARM(\"a\\\"b\")").references());
+        assertEquals(List.of("a\\"), CompositeAlarmRule.parse("ALARM(\"a\\\\\")").references());
+    }
+
+    @Test
     void atLeastCountsAbsoluteAndPercentageThresholdsOverItsList() {
         CompositeAlarmRule two = CompositeAlarmRule.parse("AT_LEAST(2, ALARM, (\"a\", \"b\", c))");
         assertEquals(List.of("a", "b", "c"), two.references());
