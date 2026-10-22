@@ -1,5 +1,6 @@
 package io.github.hectorvent.floci.services.cloudwatch.logs;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -9,6 +10,8 @@ import io.github.hectorvent.floci.core.storage.InMemoryStorage;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.CloudWatchMetricsService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -88,6 +91,15 @@ class CloudWatchLogsInputConstraintTest {
         request.put("logGroupName", GROUP);
         request.putNull("logStreamNames");
         assertEquals(200, handler.handle("FilterLogEvents", request, REGION).getStatus());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "{\"logGroupName\":\"\"}", "{\"logGroupIdentifier\":\"\"}"})
+    void filterLogEvents_noLogGroup_isRejected(String body) throws Exception {
+        // FilterLogEvents has to name its log group, by logGroupName or by logGroupIdentifier.
+        JsonNode request = MAPPER.readTree(body);
+        AwsException e = expect400(() -> handler.handle("FilterLogEvents", request, REGION));
+        assertEquals("logGroupName or logGroupIdentifier is required.", e.getMessage());
     }
 
     @Test
