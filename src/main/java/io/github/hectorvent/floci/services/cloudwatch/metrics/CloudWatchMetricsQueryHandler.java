@@ -260,13 +260,7 @@ public class CloudWatchMetricsQueryHandler {
         alarm.setAlarmActions(members(params, "AlarmActions"));
         alarm.setOkActions(members(params, "OKActions"));
         alarm.setInsufficientDataActions(members(params, "InsufficientDataActions"));
-        Map<String, String> tags = new LinkedHashMap<>();
-        for (int i = 1; ; i++) {
-            String key = params.getFirst("Tags.member." + i + ".Key");
-            if (key == null) break;
-            tags.put(key, params.getFirst("Tags.member." + i + ".Value"));
-        }
-        alarm.setTags(tags);
+        alarm.setTags(tagMembers(params));
 
         metricsService.putCompositeAlarm(alarm, region);
         return Response.ok(AwsQueryResponse.envelopeNoResult("PutCompositeAlarm", null)).build();
@@ -294,20 +288,29 @@ public class CloudWatchMetricsQueryHandler {
         List<String> values = new ArrayList<>();
         for (int i = 1; ; i++) {
             String value = params.getFirst(name + ".member." + i);
-            if (value == null) break;
+            if (value == null) {
+                break;
+            }
             values.add(value);
         }
         return values;
     }
 
-    private Response handleDeleteAlarms(MultivaluedMap<String, String> params, String region) {
-        List<String> alarmNames = new ArrayList<>();
+    /** The {@code Tags.member.N.Key} and {@code .Value} pairs of a Query request, in order. */
+    private static Map<String, String> tagMembers(MultivaluedMap<String, String> params) {
+        Map<String, String> tags = new LinkedHashMap<>();
         for (int i = 1; ; i++) {
-            String name = params.getFirst("AlarmNames.member." + i);
-            if (name == null) break;
-            alarmNames.add(name);
+            String key = params.getFirst("Tags.member." + i + ".Key");
+            if (key == null) {
+                break;
+            }
+            tags.put(key, params.getFirst("Tags.member." + i + ".Value"));
         }
-        metricsService.deleteAlarms(alarmNames, region);
+        return tags;
+    }
+
+    private Response handleDeleteAlarms(MultivaluedMap<String, String> params, String region) {
+        metricsService.deleteAlarms(members(params, "AlarmNames"), region);
         return Response.ok(AwsQueryResponse.envelopeNoResult("DeleteAlarms", null)).build();
     }
 

@@ -247,7 +247,9 @@ public class CloudWatchMetricsJsonHandler {
             ObjectNode node = compositeArray.addObject();
             putAlarmIdentity(node, a);
             node.put("AlarmRule", a.getAlarmRule());
-            if (a.getActionsSuppressor() != null) node.put("ActionsSuppressor", a.getActionsSuppressor());
+            if (a.getActionsSuppressor() != null) {
+                node.put("ActionsSuppressor", a.getActionsSuppressor());
+            }
             if (a.getActionsSuppressorWaitPeriod() != null) {
                 node.put("ActionsSuppressorWaitPeriod", a.getActionsSuppressorWaitPeriod());
             }
@@ -300,8 +302,12 @@ public class CloudWatchMetricsJsonHandler {
     /** The configuration members metric and composite alarms share. */
     private static void putAlarmIdentity(ObjectNode node, Alarm a) {
         node.put("AlarmName", a.getAlarmName());
-        if (a.getAlarmArn() != null) node.put("AlarmArn", a.getAlarmArn());
-        if (a.getAlarmDescription() != null) node.put("AlarmDescription", a.getAlarmDescription());
+        if (a.getAlarmArn() != null) {
+            node.put("AlarmArn", a.getAlarmArn());
+        }
+        if (a.getAlarmDescription() != null) {
+            node.put("AlarmDescription", a.getAlarmDescription());
+        }
         ArrayNode alarmActions = node.putArray("AlarmActions");
         a.getAlarmActions().forEach(alarmActions::add);
         ArrayNode okActions = node.putArray("OKActions");
@@ -314,9 +320,15 @@ public class CloudWatchMetricsJsonHandler {
 
     /** The state members metric and composite alarms share. */
     private static void putAlarmState(ObjectNode node, Alarm a) {
-        if (a.getStateValue() != null) node.put("StateValue", a.getStateValue());
-        if (a.getStateReason() != null) node.put("StateReason", a.getStateReason());
-        if (a.getStateReasonData() != null) node.put("StateReasonData", a.getStateReasonData());
+        if (a.getStateValue() != null) {
+            node.put("StateValue", a.getStateValue());
+        }
+        if (a.getStateReason() != null) {
+            node.put("StateReason", a.getStateReason());
+        }
+        if (a.getStateReasonData() != null) {
+            node.put("StateReasonData", a.getStateReasonData());
+        }
         node.put("StateUpdatedTimestamp", a.getStateUpdatedTimestamp());
         node.put("StateTransitionedTimestamp", a.lastTransitionTimestamp());
     }
