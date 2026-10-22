@@ -88,14 +88,17 @@ public abstract class Alarm {
     public long getStateUpdatedTimestamp() { return stateUpdatedTimestamp; }
     public void setStateUpdatedTimestamp(long stateUpdatedTimestamp) { this.stateUpdatedTimestamp = stateUpdatedTimestamp; }
 
+    /** When {@code StateValue} last changed: set when the alarm is created and on each change. */
+    public long getStateTransitionedTimestamp() { return stateTransitionedTimestamp; }
+    public void setStateTransitionedTimestamp(long timestamp) { this.stateTransitionedTimestamp = timestamp; }
+
     /**
-     * When {@code StateValue} last changed. An alarm that never changed state, or one stored
-     * before this was recorded, reports its last state update instead.
+     * {@link #getStateTransitionedTimestamp()}, or for an alarm stored before that was recorded,
+     * its last state update, the nearest record left of when it entered its state.
      */
-    public long getStateTransitionedTimestamp() {
+    public long lastTransitionTimestamp() {
         return stateTransitionedTimestamp > 0 ? stateTransitionedTimestamp : stateUpdatedTimestamp;
     }
-    public void setStateTransitionedTimestamp(long timestamp) { this.stateTransitionedTimestamp = timestamp; }
 
     public Map<String, String> getTags() { return tags; }
     public void setTags(Map<String, String> tags) { this.tags = tags; }

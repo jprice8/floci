@@ -346,10 +346,14 @@ class CompositeAlarmServiceTest {
     @Test
     void storedAlarmsReloadAsTheirOwnKindAndOlderEntriesAsMetricAlarms(@TempDir Path directory) throws Exception {
         TypeReference<Map<String, Alarm>> type = new TypeReference<>() { };
-        Map<String, Alarm> older = MAPPER.readValue(
-                "{\"legacy\":{\"alarmName\":\"old\",\"metricName\":\"CPU\",\"stateValue\":\"OK\"}}", type);
+        Map<String, Alarm> older = MAPPER.readValue("{\"legacy\":{\"alarmName\":\"old\",\"metricName\":\"CPU\","
+                + "\"stateValue\":\"OK\",\"stateUpdatedTimestamp\":1700000000}}", type);
         assertInstanceOf(MetricAlarm.class, older.get("legacy"));
         assertEquals("CPU", ((MetricAlarm) older.get("legacy")).getMetricName());
+        // Stored before transitions were recorded: it reports its last state update, and stores nothing new.
+        assertEquals(1700000000, older.get("legacy").lastTransitionTimestamp());
+        assertEquals(0, MAPPER.readTree(MAPPER.writeValueAsString(older.get("legacy")))
+                .path("stateTransitionedTimestamp").asLong());
 
         Path file = directory.resolve("alarms.json");
         PersistentStorage<String, Alarm> store = new PersistentStorage<>(file, type);

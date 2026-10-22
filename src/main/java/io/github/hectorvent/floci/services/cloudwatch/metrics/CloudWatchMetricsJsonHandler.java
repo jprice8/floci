@@ -322,7 +322,7 @@ public class CloudWatchMetricsJsonHandler {
         if (a.getStateReason() != null) node.put("StateReason", a.getStateReason());
         if (a.getStateReasonData() != null) node.put("StateReasonData", a.getStateReasonData());
         node.put("StateUpdatedTimestamp", a.getStateUpdatedTimestamp());
-        node.put("StateTransitionedTimestamp", a.getStateTransitionedTimestamp());
+        node.put("StateTransitionedTimestamp", a.lastTransitionTimestamp());
     }
 
     private Response handleDeleteAlarms(JsonNode request, String region) {

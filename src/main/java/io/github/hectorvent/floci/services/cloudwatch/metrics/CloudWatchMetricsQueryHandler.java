@@ -864,7 +864,7 @@ public class CloudWatchMetricsQueryHandler {
                 .elem("StateReason", a.getStateReason())
                 .elem("StateReasonData", a.getStateReasonData())
                 .elem("StateUpdatedTimestamp", Instant.ofEpochSecond(a.getStateUpdatedTimestamp()).toString())
-                .elem("StateTransitionedTimestamp", Instant.ofEpochSecond(a.getStateTransitionedTimestamp()).toString());
+                .elem("StateTransitionedTimestamp", Instant.ofEpochSecond(a.lastTransitionTimestamp()).toString());
     }
 
     private void toAlarmXml(XmlBuilder xml, MetricAlarm a) {

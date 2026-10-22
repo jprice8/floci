@@ -359,6 +359,8 @@ public class CloudWatchMetricsService {
             alarm.setStateReasonData(previous.getStateReasonData());
             alarm.setStateUpdatedTimestamp(previous.getStateUpdatedTimestamp());
             alarm.setStateTransitionedTimestamp(previous.getStateTransitionedTimestamp());
+        } else if (alarm.getStateTransitionedTimestamp() == 0) {
+            alarm.setStateTransitionedTimestamp(alarm.getStateUpdatedTimestamp());
         }
         if (alarm.getAlarmArn() == null) {
             alarm.setAlarmArn(regionResolver.buildArn("cloudwatch", region, "alarm:" + alarm.getAlarmName()));
@@ -604,7 +606,7 @@ public class CloudWatchMetricsService {
             if (!newState.equals(oldState)) {
                 String reasonData = triggeringAlarms(rules.get(arn), alarms, newState, composite.getChangedChildren());
                 transition(composite, newState, trigger.getAlarmArn() + " transitioned to " + trigger.getStateValue()
-                        + " at " + REASON_TIME.format(Instant.ofEpochSecond(trigger.getStateTransitionedTimestamp())),
+                        + " at " + REASON_TIME.format(Instant.ofEpochSecond(trigger.lastTransitionTimestamp())),
                         reasonData);
                 touched.add(composite);
                 notifications.addAll(prepareTransition(composite, oldState));
@@ -684,7 +686,7 @@ public class CloudWatchMetricsService {
         List<Alarm> triggering = new ArrayList<>();
         if (changedChildren == null) {
             agreeing.stream().map(alarms::withArn)
-                    .sorted(Comparator.comparingLong(Alarm::getStateTransitionedTimestamp).reversed())
+                    .sorted(Comparator.comparingLong(Alarm::lastTransitionTimestamp).reversed())
                     .forEach(triggering::add);
         } else {
             for (int index = changedChildren.size() - 1; index >= 0; index--) {
@@ -699,7 +701,7 @@ public class CloudWatchMetricsService {
             ObjectNode entry = list.addObject();
             entry.put("arn", child.getAlarmArn());
             entry.putObject("state").put("value", child.getStateValue())
-                    .put("timestamp", REASON_DATA_TIME.format(Instant.ofEpochSecond(child.getStateTransitionedTimestamp())));
+                    .put("timestamp", REASON_DATA_TIME.format(Instant.ofEpochSecond(child.lastTransitionTimestamp())));
         }
         return data.toString();
     }

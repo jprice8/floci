@@ -310,6 +310,23 @@ class CloudWatchMetricsServiceTest {
     }
 
     @Test
+    void stateTransitionedTimestampMovesOnlyWhenTheStateValueChanges() {
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("transitions");
+        alarm.setStateUpdatedTimestamp(1_000);
+        service.putMetricAlarm(alarm, REGION);
+
+        service.setAlarmState("transitions", "INSUFFICIENT_DATA", "same state", null, REGION);
+        MetricAlarm stored = service.describeAlarms(List.of("transitions"), null, REGION).getFirst();
+        assertTrue(stored.getStateUpdatedTimestamp() > 1_000);
+        assertEquals(1_000, stored.getStateTransitionedTimestamp());
+
+        service.setAlarmState("transitions", "ALARM", "breached", null, REGION);
+        stored = service.describeAlarms(List.of("transitions"), null, REGION).getFirst();
+        assertEquals(stored.getStateUpdatedTimestamp(), stored.getStateTransitionedTimestamp());
+    }
+
+    @Test
     void setAlarmStateOnNonexistentAlarmThrowsResourceNotFound() {
         AwsException ex = assertThrows(AwsException.class,
                 () -> service.setAlarmState("missing-alarm", "ALARM", "reason", null, REGION));
