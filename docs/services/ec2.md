@@ -821,6 +821,10 @@ allocated address.
 | DescribeRegions | Returns the regions known to the local EC2 service. |
 | DescribeAccountAttributes | Returns local account-level EC2 attributes. |
 
+Every zone Floci models is a standard Availability Zone, so each one reports its Region as its
+`NetworkBorderGroup` (`eu-west-1` for `eu-west-1a`), as AWS does. Local Zones and Wavelength Zones,
+whose border groups differ from the Region, are not modeled.
+
 A zone id has AWS's shape, a short region prefix and `-az<n>`: `use1-az1` in `us-east-1`, `apne1-az1`
 in `ap-northeast-1`, `usgw1-az1` in `us-gov-west-1`. On AWS the pairing of a zone name with a zone id
 differs per account; Floci always pairs zone `a` with `az1`, `b` with `az2`, and so on. Subnets, VPC
