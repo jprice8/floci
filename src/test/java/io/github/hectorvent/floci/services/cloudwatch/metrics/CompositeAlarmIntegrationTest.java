@@ -94,6 +94,30 @@ class CompositeAlarmIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
+    void childrenAndParentsOfAnAlarmAreListedOnTheirOwn(boolean json) {
+        String metric = unique("leaf");
+        String inner = unique("inner");
+        String outer = unique("outer");
+        putMetricAlarm(json, metric);
+        putComposite(json, inner, "ALARM(\"" + metric + "\")");
+        putComposite(json, outer, "ALARM(" + inner + ") OR OK(\"" + ARN_PREFIX + metric + "\")");
+
+        Map<String, Object> children = Map.of("ChildrenOfAlarmName", outer);
+        assertEquals(List.of(metric), describe(json, children, "MetricAlarms"));
+        assertEquals(List.of(inner), describe(json, children, "CompositeAlarms"));
+        Map<String, Object> parents = Map.of("ParentsOfAlarmName", metric);
+        assertEquals(List.of(), describe(json, parents, "MetricAlarms"));
+        assertEquals(List.of(inner, outer), describe(json, parents, "CompositeAlarms").stream().sorted().toList());
+        assertEquals(List.of(outer), describe(json, Map.of("ParentsOfAlarmName", inner), "CompositeAlarms"));
+        assertEquals(List.of(), describe(json, Map.of("ChildrenOfAlarmName", metric), "MetricAlarms"));
+
+        assertError(json, call(json, "DescribeAlarms", Map.of("ChildrenOfAlarmName", outer,
+                "AlarmNames", List.of(metric))), "ChildrenOfAlarmName and ParentsOfAlarmName cannot be combined "
+                + "with each other or with any parameter except MaxRecords and NextToken.");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
     void invalidRulesAndUnknownChildrenStoreNothing(boolean json) {
         String name = unique("invalid");
         assertError(json, call(json, "PutCompositeAlarm", Map.of("AlarmName", name, "AlarmRule", "TRUE AND")),
@@ -123,6 +147,11 @@ class CompositeAlarmIntegrationTest {
         request.put("ComparisonOperator", "GreaterThanThreshold");
         request.put("TreatMissingData", "ignore");
         call(json, "PutMetricAlarm", request).then().statusCode(200);
+        cleanup.register(() -> call(json, "DeleteAlarms", Map.of("AlarmNames", List.of(name))));
+    }
+
+    private void putComposite(boolean json, String name, String rule) {
+        call(json, "PutCompositeAlarm", Map.of("AlarmName", name, "AlarmRule", rule)).then().statusCode(200);
         cleanup.register(() -> call(json, "DeleteAlarms", Map.of("AlarmNames", List.of(name))));
     }
 

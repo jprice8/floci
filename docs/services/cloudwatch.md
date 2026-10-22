@@ -431,14 +431,16 @@ that fit in its documented 4000 characters. A state set with `SetAlarmState` hol
 changes state. Alarms on a cycle of composite alarms are not evaluated.
 
 `DescribeAlarms` returns composite alarms only when `AlarmTypes` includes `CompositeAlarm`.
+`ChildrenOfAlarmName` returns the alarms a composite alarm's rule names, and `ParentsOfAlarmName`
+the composite alarms whose rules name an alarm; either excludes every other filter. Both return
+full alarms, where AWS returns only names, ARNs and states.
 `DeleteAlarms` deletes nothing when the request names more than one composite alarm, or any
 alarm a composite alarm's rule references, even one deleted by the same request. Alarm names
 are unique across metric and composite alarms in a region.
 
 `ActionsSuppressor`, `ActionsSuppressorWaitPeriod` and `ActionsSuppressorExtensionPeriod` are
-stored and returned, but actions are not suppressed. `DescribeAlarms` ignores
-`ChildrenOfAlarmName` and `ParentsOfAlarmName`, and the quota of 150 composite alarms per child
-is not enforced.
+stored and returned, but actions are not suppressed. The quota of 150 composite alarms per
+child is not enforced.
 
 ### Metric-math alarm definitions
 

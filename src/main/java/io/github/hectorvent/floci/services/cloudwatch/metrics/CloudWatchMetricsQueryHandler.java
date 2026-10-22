@@ -273,23 +273,16 @@ public class CloudWatchMetricsQueryHandler {
     }
 
     private Response handleDescribeAlarms(MultivaluedMap<String, String> params, String region) {
-        List<String> alarmNames = members(params, "AlarmNames");
-        String prefix = params.getFirst("AlarmNamePrefix");
-        List<String> alarmTypes = members(params, "AlarmTypes");
-        CloudWatchMetricsService.validateAlarmTypes(alarmTypes);
-
-        // Without AlarmTypes, AWS returns metric alarms only.
-        List<MetricAlarm> alarms = alarmTypes.isEmpty() || alarmTypes.contains("MetricAlarm")
-                ? metricsService.describeAlarms(alarmNames, prefix, region) : List.of();
-        List<CompositeAlarm> composites = alarmTypes.contains("CompositeAlarm")
-                ? metricsService.describeCompositeAlarms(alarmNames, prefix, region) : List.of();
+        CloudWatchMetricsService.DescribedAlarms described = metricsService.describeAlarms(
+                members(params, "AlarmNames"), params.getFirst("AlarmNamePrefix"), members(params, "AlarmTypes"),
+                params.getFirst("ChildrenOfAlarmName"), params.getFirst("ParentsOfAlarmName"), region);
 
         XmlBuilder xml = new XmlBuilder().start("CompositeAlarms");
-        for (CompositeAlarm a : composites) {
+        for (CompositeAlarm a : described.compositeAlarms()) {
             toCompositeAlarmXml(xml, a);
         }
         xml.end("CompositeAlarms").start("MetricAlarms");
-        for (MetricAlarm a : alarms) {
+        for (MetricAlarm a : described.metricAlarms()) {
             toAlarmXml(xml, a);
         }
         xml.end("MetricAlarms");

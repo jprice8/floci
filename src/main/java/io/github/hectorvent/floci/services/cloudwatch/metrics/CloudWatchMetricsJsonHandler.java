@@ -237,17 +237,13 @@ public class CloudWatchMetricsJsonHandler {
         String prefix = request.has("AlarmNamePrefix") ? request.path("AlarmNamePrefix").asText() : null;
         List<String> alarmTypes = new ArrayList<>();
         request.path("AlarmTypes").forEach(t -> alarmTypes.add(t.asText()));
-        CloudWatchMetricsService.validateAlarmTypes(alarmTypes);
-
-        // Without AlarmTypes, AWS returns metric alarms only.
-        List<MetricAlarm> alarms = alarmTypes.isEmpty() || alarmTypes.contains("MetricAlarm")
-                ? metricsService.describeAlarms(alarmNames, prefix, region) : List.of();
-        List<CompositeAlarm> composites = alarmTypes.contains("CompositeAlarm")
-                ? metricsService.describeCompositeAlarms(alarmNames, prefix, region) : List.of();
+        CloudWatchMetricsService.DescribedAlarms described = metricsService.describeAlarms(alarmNames, prefix,
+                alarmTypes, request.path("ChildrenOfAlarmName").asText(null),
+                request.path("ParentsOfAlarmName").asText(null), region);
 
         ObjectNode response = objectMapper.createObjectNode();
         ArrayNode compositeArray = response.putArray("CompositeAlarms");
-        for (CompositeAlarm a : composites) {
+        for (CompositeAlarm a : described.compositeAlarms()) {
             ObjectNode node = compositeArray.addObject();
             putAlarmIdentity(node, a);
             node.put("AlarmRule", a.getAlarmRule());
@@ -261,7 +257,7 @@ public class CloudWatchMetricsJsonHandler {
             putAlarmState(node, a);
         }
         ArrayNode arr = response.putArray("MetricAlarms");
-        for (MetricAlarm a : alarms) {
+        for (MetricAlarm a : described.metricAlarms()) {
             ObjectNode node = arr.addObject();
             putAlarmIdentity(node, a);
             if (!a.getMetrics().isEmpty()) {

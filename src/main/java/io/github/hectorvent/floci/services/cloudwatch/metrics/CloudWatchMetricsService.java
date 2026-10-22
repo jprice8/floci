@@ -450,6 +450,63 @@ public class CloudWatchMetricsService {
         return matchingAlarms(alarmNames, alarmNamePrefix, region, MetricAlarm.class);
     }
 
+    /** What DescribeAlarms answers: its metric alarms and its composite alarms, either list possibly empty. */
+    public record DescribedAlarms(List<MetricAlarm> metricAlarms, List<CompositeAlarm> compositeAlarms) {}
+
+    /**
+     * DescribeAlarms. Without {@code alarmTypes} it returns metric alarms only, as AWS does.
+     * {@code childrenOf} names a composite alarm and returns the alarms its rule names;
+     * {@code parentsOf} names any alarm and returns the composite alarms whose rules name it.
+     * Either one excludes every other filter. Full alarms are returned in both cases, where AWS
+     * returns only their names, ARNs and states.
+     */
+    public synchronized DescribedAlarms describeAlarms(List<String> alarmNames, String alarmNamePrefix,
+                                                       List<String> alarmTypes, String childrenOf,
+                                                       String parentsOf, String region) {
+        validateAlarmTypes(alarmTypes);
+        if (childrenOf != null || parentsOf != null) {
+            if ((childrenOf != null && parentsOf != null) || !alarmNames.isEmpty() || alarmNamePrefix != null
+                    || !alarmTypes.isEmpty()) {
+                throw new AwsException("ValidationError", "ChildrenOfAlarmName and ParentsOfAlarmName cannot be "
+                        + "combined with each other or with any parameter except MaxRecords and NextToken.", 400);
+            }
+            return childrenOf != null ? childrenOf(childrenOf, region) : parentsOf(parentsOf, region);
+        }
+        List<MetricAlarm> metricAlarms = alarmTypes.isEmpty() || alarmTypes.contains("MetricAlarm")
+                ? describeAlarms(alarmNames, alarmNamePrefix, region) : List.of();
+        List<CompositeAlarm> compositeAlarms = alarmTypes.contains("CompositeAlarm")
+                ? describeCompositeAlarms(alarmNames, alarmNamePrefix, region) : List.of();
+        return new DescribedAlarms(metricAlarms, compositeAlarms);
+    }
+
+    private DescribedAlarms childrenOf(String name, String region) {
+        AlarmIndex alarms = alarmIndex(region);
+        CompositeAlarmRule rule = alarms.byName().get(name) instanceof CompositeAlarm composite
+                ? parseStored(composite) : null;
+        Set<Alarm> children = new LinkedHashSet<>();
+        if (rule != null) {
+            rule.references().stream().map(alarms::resolve).filter(Objects::nonNull).forEach(children::add);
+        }
+        return new DescribedAlarms(
+                children.stream().filter(MetricAlarm.class::isInstance).map(MetricAlarm.class::cast).toList(),
+                children.stream().filter(CompositeAlarm.class::isInstance).map(CompositeAlarm.class::cast).toList());
+    }
+
+    private DescribedAlarms parentsOf(String name, String region) {
+        AlarmIndex alarms = alarmIndex(region);
+        Alarm child = alarms.byName().get(name);
+        List<CompositeAlarm> parents = new ArrayList<>();
+        if (child != null) {
+            for (CompositeAlarm composite : alarms.composites()) {
+                CompositeAlarmRule rule = parseStored(composite);
+                if (rule != null && rule.references().stream().anyMatch(reference -> alarms.resolve(reference) == child)) {
+                    parents.add(composite);
+                }
+            }
+        }
+        return new DescribedAlarms(List.of(), parents);
+    }
+
     public List<CompositeAlarm> describeCompositeAlarms(List<String> alarmNames, String alarmNamePrefix,
                                                         String region) {
         return matchingAlarms(alarmNames, alarmNamePrefix, region, CompositeAlarm.class);
@@ -471,7 +528,7 @@ public class CloudWatchMetricsService {
     }
 
     /** Rejects a {@code DescribeAlarms} {@code AlarmTypes} value the API does not define. */
-    public static void validateAlarmTypes(List<String> alarmTypes) {
+    private static void validateAlarmTypes(List<String> alarmTypes) {
         for (String type : alarmTypes) {
             if (!ALARM_TYPES.contains(type)) {
                 throw new AwsException("ValidationError", "1 validation error detected: Value '" + alarmTypes

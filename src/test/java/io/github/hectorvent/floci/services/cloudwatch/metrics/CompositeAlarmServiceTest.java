@@ -350,8 +350,50 @@ class CompositeAlarmServiceTest {
         assertEquals(List.of("other-composite"),
                 names(service.describeCompositeAlarms(List.of("other-composite", "app-metric"), null, REGION)));
         assertEquals(List.of("app-metric"), names(service.allAlarms()));
-        assertThrows(AwsException.class, () -> CloudWatchMetricsService.validateAlarmTypes(List.of("Composite")));
-        CloudWatchMetricsService.validateAlarmTypes(List.of("MetricAlarm", "CompositeAlarm", "LogAlarm"));
+
+        CloudWatchMetricsService.DescribedAlarms byDefault = describe(List.of(), "app-", List.of(), null, null);
+        assertEquals(List.of("app-metric"), names(byDefault.metricAlarms()));
+        assertEquals(List.of(), byDefault.compositeAlarms());
+        CloudWatchMetricsService.DescribedAlarms both = describe(List.of(), "app-",
+                List.of("CompositeAlarm", "MetricAlarm"), null, null);
+        assertEquals(List.of("app-metric"), names(both.metricAlarms()));
+        assertEquals(List.of("app-composite"), names(both.compositeAlarms()));
+        CloudWatchMetricsService.DescribedAlarms logAlarms = describe(List.of(), null, List.of("LogAlarm"), null, null);
+        assertEquals(List.of(), logAlarms.metricAlarms());
+        assertEquals(List.of(), logAlarms.compositeAlarms());
+        assertThrows(AwsException.class, () -> describe(List.of(), null, List.of("Composite"), null, null));
+    }
+
+    @Test
+    void childrenAndParentsFollowTheRulesByNameOrArn() {
+        metric("leaf");
+        metric("other-leaf");
+        composite("inner", "ALARM(leaf)");
+        composite("outer", "ALARM(\"inner\") AND OK(\"" + arn("leaf") + "\") OR AT_LEAST(1, ALARM, (other-leaf))");
+
+        CloudWatchMetricsService.DescribedAlarms children = describe(List.of(), null, List.of(), "outer", null);
+        assertEquals(List.of("leaf", "other-leaf"), names(children.metricAlarms()));
+        assertEquals(List.of("inner"), names(children.compositeAlarms()));
+        assertEquals(List.of("inner", "outer"), names(describe(List.of(), null, List.of(), null, "leaf").compositeAlarms()));
+        assertEquals(List.of("outer"), names(describe(List.of(), null, List.of(), null, "inner").compositeAlarms()));
+        assertEquals(List.of(), names(describe(List.of(), null, List.of(), null, "outer").compositeAlarms()));
+        assertEquals(List.of(), names(describe(List.of(), null, List.of(), "leaf", null).metricAlarms()));
+        assertEquals(List.of(), names(describe(List.of(), null, List.of(), "missing", null).metricAlarms()));
+        assertEquals(List.of(), names(describe(List.of(), null, List.of(), null, "missing").compositeAlarms()));
+
+        for (Runnable combined : List.<Runnable>of(
+                () -> describe(List.of(), null, List.of(), "outer", "leaf"),
+                () -> describe(List.of("leaf"), null, List.of(), "outer", null),
+                () -> describe(List.of(), "l", List.of(), null, "leaf"),
+                () -> describe(List.of(), null, List.of("CompositeAlarm"), null, "leaf"))) {
+            assertRejected("ChildrenOfAlarmName and ParentsOfAlarmName cannot be combined with each other or with "
+                    + "any parameter except MaxRecords and NextToken.", combined);
+        }
+    }
+
+    private CloudWatchMetricsService.DescribedAlarms describe(List<String> names, String prefix, List<String> types,
+                                                              String childrenOf, String parentsOf) {
+        return service.describeAlarms(names, prefix, types, childrenOf, parentsOf, REGION);
     }
 
     @Test
