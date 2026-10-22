@@ -69,7 +69,8 @@ One action is currently simplified:
 metric filters and subscription filters use: terms, quoted phrases, `?` alternatives, `-`
 exclusions, JSON and space-delimited patterns. An invalid pattern is refused with
 `InvalidParameterException`, and so is a request that names no log group by `logGroupName` or
-`logGroupIdentifier`.
+`logGroupIdentifier`. A log group that does not exist in the request's region and account is
+refused with `ResourceNotFoundException`, even when the pattern's syntax is invalid.
 
 ### Subscription filters {#subscription-filters}
 

@@ -1303,6 +1303,96 @@ class CloudWatchLogsServiceTest {
         assertEquals("InvalidParameterException", delimited.getErrorCode());
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void filterLogEventsRefusesAMissingOrDeletedGroup(boolean deleted) {
+        service.createLogGroup("/app/kept", null, null, REGION);
+        service.createLogStream("/app/kept", "stream", REGION);
+        service.putLogEvents("/app/kept", "stream",
+                List.of(Map.of("timestamp", 1L, "message", "kept")), REGION);
+        if (deleted) {
+            service.createLogGroup("/app/gone", null, null, REGION);
+            service.createLogStream("/app/gone", "stream", REGION);
+            service.putLogEvents("/app/gone", "stream",
+                    List.of(Map.of("timestamp", 2L, "message", "gone")), REGION);
+            service.deleteLogGroup("/app/gone", REGION);
+        }
+
+        AwsException error = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "/app/gone", null, null, null, null, 100, null, REGION));
+
+        assertEquals("ResourceNotFoundException", error.getErrorCode());
+        assertEquals("The specified log group does not exist.", error.getMessage());
+        assertEquals(400, error.getHttpStatus());
+        assertEquals(List.of("kept"), service.filterLogEvents("/app/kept", null, null, null, null, 100, null, REGION)
+                .events().stream().map(f -> f.event().getMessage()).toList());
+    }
+
+    @Test
+    void filterLogEventsLooksTheGroupUpInTheRequestRegion() {
+        service.createLogGroup("/app/logs", null, null, REGION);
+
+        AwsException error = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "/app/logs", null, null, null, null, 100, null, "eu-west-1"));
+
+        assertEquals("ResourceNotFoundException", error.getErrorCode());
+    }
+
+    @Test
+    void filterLogEventsLooksTheGroupUpInTheCallerAccount() {
+        String accountA = "111111111111";
+        String accountB = "222222222222";
+        CloudWatchLogsService accountService = new CloudWatchLogsService(
+                new AccountAwareStorageBackend<>(new InMemoryStorage<>(), null, accountB),
+                new AccountAwareStorageBackend<>(new InMemoryStorage<>(), null, accountB),
+                new AccountAwareStorageBackend<>(new InMemoryStorage<>(), null, accountB),
+                new AccountAwareStorageBackend<>(new InMemoryStorage<>(), null, accountB),
+                new AccountAwareStorageBackend<>(new InMemoryStorage<>(), null, accountB),
+                10_000, new RegionResolver(REGION, accountB));
+        accountService.createLogGroupForAccount(accountA, "/app/logs", null, null, REGION);
+        accountService.createLogStreamForAccount(accountA, "/app/logs", "stream", REGION);
+        accountService.putLogEventsForAccount(accountA, "/app/logs", "stream",
+                List.of(Map.of("timestamp", 1L, "message", accountA)), REGION);
+
+        AwsException error = assertThrows(AwsException.class, () -> accountService.filterLogEvents(
+                "/app/logs", null, null, null, null, 100, null, REGION));
+
+        assertEquals("ResourceNotFoundException", error.getErrorCode());
+    }
+
+    @Test
+    void filterLogEventsRefusesAMissingGroupWhoseKeyAnotherGroupHolds() {
+        // Group "x::victim" in us-east-1 has the storage key that group "victim" in region "us-east-1::x"
+        // would have. Only the stored name shows that the requested group does not exist.
+        String historical = "x::victim";
+        service.createLogGroup(historical, null, null, REGION);
+        service.createLogStream(historical, "stream", REGION);
+        service.putLogEvents(historical, "stream",
+                List.of(Map.of("timestamp", 1L, "message", "private")), REGION);
+
+        AwsException error = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "victim", null, null, null, null, 100, null, REGION + "::x"));
+
+        assertEquals("ResourceNotFoundException", error.getErrorCode());
+    }
+
+    @Test
+    void filterLogEventsReportsAMissingGroupBeforeAnInvalidPattern() {
+        AwsException error = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "/app/missing", null, null, null, "[", 100, null, REGION));
+
+        assertEquals("ResourceNotFoundException", error.getErrorCode());
+    }
+
+    @Test
+    void filterLogEventsRefusesAnOverlongPatternBeforeLookingUpTheGroup() {
+        // The API limits a pattern to 1,024 characters, so a longer one is refused whatever the group.
+        AwsException error = assertThrows(AwsException.class, () -> service.filterLogEvents(
+                "/app/missing", null, null, null, "x".repeat(1025), 100, null, REGION));
+
+        assertEquals("InvalidParameterException", error.getErrorCode());
+    }
+
     @Test
     void filterLogEventsCarriesEmittingStreamPerEvent() {
         service.createLogGroup("/app/logs", null, null, REGION);

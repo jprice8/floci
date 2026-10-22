@@ -953,11 +953,22 @@ public class CloudWatchLogsService implements ResourceProvider, Resettable {
                                                     String nextToken, String region) {
         int maxEvents = Math.min(limit > 0 ? limit : Integer.MAX_VALUE,
                 maxEventsPerQuery);
+        boolean patterned = filterPattern != null && !filterPattern.isBlank();
+        if (patterned) {
+            requireFilterPatternLength(filterPattern);
+        }
+        // A group that does not exist is reported before the pattern is parsed, so an invalid
+        // pattern on a missing group still answers ResourceNotFoundException. The stored name is
+        // checked too, as DeleteLogGroup and the tag operations do: a name or region holding "::"
+        // can give another group the requested group's key.
+        groupStore.get(groupKey(region, groupName))
+                .filter(stored -> groupName.equals(stored.getLogGroupName()))
+                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
+                        "The specified log group does not exist.", 400));
         // The filter pattern syntax metric and subscription filters use: terms, quoted phrases,
         // ?alternatives, -exclusions, JSON and space-delimited patterns. Parsed before the scan,
         // so an invalid pattern is refused whatever the group holds.
-        FilterPattern pattern = filterPattern == null || filterPattern.isBlank()
-                ? null : requireFilterPattern(filterPattern);
+        FilterPattern pattern = patterned ? requireFilterPattern(filterPattern) : null;
 
         String groupPrefix = groupKeyPrefix(region) + groupName + "::";
         List<String> requested = streamNames == null ? List.of() : streamNames;
@@ -1231,13 +1242,18 @@ public class CloudWatchLogsService implements ResourceProvider, Resettable {
         if (filterPattern == null) {
             throw invalid("filterPattern is required.");
         }
-        if (filterPattern.length() > MAX_FILTER_PATTERN_LENGTH) {
-            throw invalid("filterPattern must be at most " + MAX_FILTER_PATTERN_LENGTH + " characters.");
-        }
+        requireFilterPatternLength(filterPattern);
         try {
             return FilterPattern.parse(filterPattern);
         } catch (FilterPatternException e) {
             throw invalid(e.getMessage());
+        }
+    }
+
+    /** Refuses a filter pattern longer than the API's 1,024-character limit. */
+    private static void requireFilterPatternLength(String filterPattern) {
+        if (filterPattern.length() > MAX_FILTER_PATTERN_LENGTH) {
+            throw invalid("filterPattern must be at most " + MAX_FILTER_PATTERN_LENGTH + " characters.");
         }
     }
 

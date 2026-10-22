@@ -6,6 +6,7 @@ import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
 import software.amazon.awssdk.services.cloudwatchlogs.model.FilteredLogEvent;
 import software.amazon.awssdk.services.cloudwatchlogs.model.InputLogEvent;
 import software.amazon.awssdk.services.cloudwatchlogs.model.InvalidParameterException;
+import software.amazon.awssdk.services.cloudwatchlogs.model.ResourceNotFoundException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -82,6 +83,23 @@ class CloudWatchLogsFilterPatternTest {
             } finally {
                 logs.deleteLogGroup(request -> request.logGroupName(groupName));
             }
+        }
+    }
+
+    @Test
+    @DisplayName("a log group that does not exist is refused with ResourceNotFoundException")
+    void aMissingGroupIsRefused() {
+        String groupName = "/test/" + TestFixtures.uniqueName("logs-filter-pattern-missing");
+
+        try (CloudWatchLogsClient logs = TestFixtures.cloudWatchLogsClient()) {
+            assertThatThrownBy(() -> logs.filterLogEvents(request -> request.logGroupName(groupName)))
+                    .isInstanceOfSatisfying(ResourceNotFoundException.class, error ->
+                            assertThat(error.awsErrorDetails().errorMessage())
+                                    .isEqualTo("The specified log group does not exist."));
+            logs.createLogGroup(request -> request.logGroupName(groupName));
+            logs.deleteLogGroup(request -> request.logGroupName(groupName));
+            assertThatThrownBy(() -> logs.filterLogEvents(request -> request.logGroupName(groupName)))
+                    .isInstanceOf(ResourceNotFoundException.class);
         }
     }
 
