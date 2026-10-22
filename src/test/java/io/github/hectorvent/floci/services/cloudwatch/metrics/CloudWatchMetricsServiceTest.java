@@ -286,6 +286,30 @@ class CloudWatchMetricsServiceTest {
     }
 
     @Test
+    void anUpdateReplacesTheDefinitionButKeepsTheAlarmState() {
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("redefined");
+        alarm.setThreshold(10);
+        service.putMetricAlarm(alarm, REGION);
+        service.setAlarmState("redefined", "ALARM", "Threshold breached", "{\"version\":\"1.0\"}", REGION);
+        MetricAlarm before = service.describeAlarms(List.of("redefined"), null, REGION).getFirst();
+
+        MetricAlarm update = new MetricAlarm();
+        update.setAlarmName("redefined");
+        update.setThreshold(20);
+        update.setAlarmDescription("raised");
+        service.putMetricAlarm(update, REGION);
+
+        MetricAlarm after = service.describeAlarms(List.of("redefined"), null, REGION).getFirst();
+        assertEquals(20, after.getThreshold());
+        assertEquals("raised", after.getAlarmDescription());
+        assertEquals("ALARM", after.getStateValue());
+        assertEquals("Threshold breached", after.getStateReason());
+        assertEquals("{\"version\":\"1.0\"}", after.getStateReasonData());
+        assertEquals(before.getStateUpdatedTimestamp(), after.getStateUpdatedTimestamp());
+    }
+
+    @Test
     void setAlarmStateOnNonexistentAlarmThrowsResourceNotFound() {
         AwsException ex = assertThrows(AwsException.class,
                 () -> service.setAlarmState("missing-alarm", "ALARM", "reason", null, REGION));

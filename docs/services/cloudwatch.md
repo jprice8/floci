@@ -446,7 +446,8 @@ both JSON and Query protocols. Expressions, labels, `ReturnData`, account IDs, q
 and nested metric statistics (including dimensions and units) survive storage reloads.
 Metric-math alarm responses omit the single-metric fields, including top-level `Period`.
 Updating an alarm replaces its metric definition, so changing between `Metrics` and a single
-metric does not retain the previous definition.
+metric does not retain the previous definition. As on AWS, the update keeps the alarm's state;
+the next evaluation moves it if the new definition disagrees.
 
 This is management-plane support: the alarm evaluator currently evaluates only single-metric
 alarms, not metric-math expressions. `SetAlarmState` remains available for manual transitions.

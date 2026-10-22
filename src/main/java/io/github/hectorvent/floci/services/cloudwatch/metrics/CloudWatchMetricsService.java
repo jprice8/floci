@@ -342,28 +342,31 @@ public class CloudWatchMetricsService {
         };
     }
 
-    public void putMetricAlarm(MetricAlarm alarm, String region) {
-        List<AlarmSnsNotifier.Notification> notifications = new ArrayList<>();
-        synchronized (this) {
-            String key = region + "::" + alarm.getAlarmName();
-            Alarm previous = alarmStore.get(key).orElse(null);
-            if (previous instanceof CompositeAlarm) {
-                throw new AwsException("ValidationError",
-                        "An alarm named " + alarm.getAlarmName() + " already exists as a composite alarm.", 400);
-            }
-            if (alarm.getAlarmArn() == null) {
-                alarm.setAlarmArn(regionResolver.buildArn("cloudwatch", region, "alarm:" + alarm.getAlarmName()));
-            }
-            alarm.setRegion(region);
-            alarm.setAlarmConfigurationUpdatedTimestamp(Instant.now().getEpochSecond());
-            alarmStore.put(key, alarm);
-            LOG.infov("PutMetricAlarm: {0} in {1}", alarm.getAlarmName(), region);
-            // The new definition starts in its own state; composite alarms over it see the change.
-            if (previous != null && !Objects.equals(previous.getStateValue(), alarm.getStateValue())) {
-                propagate(alarm, region, notifications);
-            }
+    /**
+     * Creates or replaces a metric alarm. An update keeps the alarm's state, as AWS does: the
+     * definition changes, and the next evaluation moves the state if the new one disagrees.
+     */
+    public synchronized void putMetricAlarm(MetricAlarm alarm, String region) {
+        String key = region + "::" + alarm.getAlarmName();
+        Alarm previous = alarmStore.get(key).orElse(null);
+        if (previous instanceof CompositeAlarm) {
+            throw new AwsException("ValidationError",
+                    "An alarm named " + alarm.getAlarmName() + " already exists as a composite alarm.", 400);
         }
-        publish(notifications);
+        if (previous != null) {
+            alarm.setStateValue(previous.getStateValue());
+            alarm.setStateReason(previous.getStateReason());
+            alarm.setStateReasonData(previous.getStateReasonData());
+            alarm.setStateUpdatedTimestamp(previous.getStateUpdatedTimestamp());
+            alarm.setStateTransitionedTimestamp(previous.getStateTransitionedTimestamp());
+        }
+        if (alarm.getAlarmArn() == null) {
+            alarm.setAlarmArn(regionResolver.buildArn("cloudwatch", region, "alarm:" + alarm.getAlarmName()));
+        }
+        alarm.setRegion(region);
+        alarm.setAlarmConfigurationUpdatedTimestamp(Instant.now().getEpochSecond());
+        alarmStore.put(key, alarm);
+        LOG.infov("PutMetricAlarm: {0} in {1}", alarm.getAlarmName(), region);
     }
 
     /**

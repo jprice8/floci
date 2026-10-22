@@ -285,14 +285,16 @@ class CompositeAlarmServiceTest {
     }
 
     @Test
-    void redefiningAMetricAlarmResetsItsStateForItsParents() {
+    void redefiningAMetricAlarmKeepsItsStateSoItsParentsDoNotMove() {
         metric("m");
         composite("watcher", "OK(m)");
         set("m", "OK");
         assertEquals("ALARM", composite("watcher").getStateValue());
+        String reason = composite("watcher").getStateReason();
         metric("m");
-        assertEquals("OK", composite("watcher").getStateValue());
-        assertTransitionedBecause("watcher", "m", "INSUFFICIENT_DATA");
+        assertEquals("OK", service.describeAlarms(List.of("m"), null, REGION).getFirst().getStateValue());
+        assertEquals("ALARM", composite("watcher").getStateValue());
+        assertEquals(reason, composite("watcher").getStateReason());
     }
 
     @Test
