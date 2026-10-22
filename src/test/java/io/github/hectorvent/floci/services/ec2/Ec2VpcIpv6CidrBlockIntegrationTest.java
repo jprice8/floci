@@ -1,6 +1,8 @@
 package io.github.hectorvent.floci.services.ec2;
 
+import io.github.hectorvent.floci.core.common.CidrCanonicalizer;
 import io.quarkus.test.junit.QuarkusTest;
+import io.restassured.response.Response;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
@@ -9,6 +11,7 @@ import static org.hamcrest.Matchers.emptyOrNullString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.matchesRegex;
 import static org.hamcrest.Matchers.not;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * CreateVpc ignored AmazonProvidedIpv6CidrBlock and no response carried an
@@ -70,6 +73,39 @@ class Ec2VpcIpv6CidrBlockIntegrationTest {
             .statusCode(200)
             .body("DescribeVpcsResponse.vpcSet.item.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock",
                     equalTo(created));
+    }
+
+    /**
+     * The block comes back in the RFC 5952 text AWS returns, so a random group never keeps a
+     * leading zero ({@code 2600:1f18:a3f:1200::/56}, not {@code 2600:1f18:0a3f:1200::/56}).
+     * About one block in eight draws such a group, so 64 VPCs all but always include one.
+     */
+    @Test
+    void amazonProvidedBlocksAreWrittenInCanonicalForm() {
+        for (int i = 0; i < 64; i++) {
+            Response created = given()
+                .formParam("Action", "CreateVpc")
+                .formParam("CidrBlock", "10.98.0.0/16")
+                .formParam("AmazonProvidedIpv6CidrBlock", "true")
+                .header("Authorization", AUTH_HEADER)
+            .when()
+                .post("/")
+            .then()
+                .statusCode(200)
+                .extract().response();
+            String block = created.path("CreateVpcResponse.vpc.ipv6CidrBlockAssociationSet.item.ipv6CidrBlock");
+            assertEquals(CidrCanonicalizer.canonicalize(block).orElseThrow(), block);
+
+            String vpcId = created.path("CreateVpcResponse.vpc.vpcId");
+            given()
+                .formParam("Action", "DeleteVpc")
+                .formParam("VpcId", vpcId)
+                .header("Authorization", AUTH_HEADER)
+            .when()
+                .post("/")
+            .then()
+                .statusCode(200);
+        }
     }
 
     @Test

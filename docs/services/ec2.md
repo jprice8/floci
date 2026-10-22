@@ -321,6 +321,14 @@ private gateway lifecycles are not modelled.
 | DeleteSubnet | Deletes a subnet from the local EC2 store. Fails with `DependencyViolation` while the subnet still has a transit gateway attachment, an Elastic Load Balancing v2 load balancer, or anything holding a network interface in it: an instance that is not terminated, a NAT gateway that is not deleted or failed, a standalone network interface, or an interface endpoint. |
 | ModifySubnetAttribute | Updates supported subnet attributes. |
 
+`CreateSubnet` stores both CIDR blocks in canonical form, with host bits zeroed. AWS documents the
+zeroing for the IPv4 block only; Floci applies it to the IPv6 block as well. The IPv6 block is also
+written as RFC 5952 text, compressed and lowercase, so `2600:1f18:0003:0000:0000:0000:0000:0000/64`
+comes back as `2600:1f18:3::/64`, and an Amazon-provided `/56` of a VPC is written the same way. A
+value that is not a plain IPv6 CIDR is stored as sent. The IPv6 block is not checked against the
+VPC's IPv6 blocks, the sizes AWS allows (`/44` to `/64` in steps of `/4`), or the blocks of other
+subnets.
+
 ### Security Groups
 
 | Action | Description |
