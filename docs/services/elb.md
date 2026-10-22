@@ -99,6 +99,8 @@ HTTPS listeners require a default certificate. Supply one when creating a listen
 - Instance targets are resolved through EC2 instance private addresses so local load balancer traffic can reach containers.
 - Target health starts in `initial` state with reason `Elb.RegistrationInProgress` and is updated by Floci's health checker when monitoring is active.
 - Health checks probe the target group's `HealthCheckPort` when it is a port number, and each target's own port when it is `traffic-port` (the default).
+- `CreateTargetGroup` needs a `Port` for every target type but `lambda`. Without one it returns `ValidationError` `A port must be specified` and creates nothing, and CloudFormation fails an `AWS::ElasticLoadBalancingV2::TargetGroup` without `Port` the same way.
+- A target registered without a `Port` receives traffic on its group's port, so it is the same target as one registered with that port: registering either form again adds no second target, `DescribeTargetHealth` without `Targets` lists it with the group's port, and `DeregisterTargets` removes it with or without the port. A target registered with another port is a separate target, deregistered only by naming that port.
 - Each `CreateListener` automatically creates an immutable default rule (`priority=default`, `isDefault=true`). This rule cannot be deleted; use `ModifyListener` to change its action.
 - Rule priorities are unique per listener: `CreateRule` and `SetRulePriorities` only reject a priority held by another rule on the same listener. `SetRulePriorities` is atomic: all priority assignments are validated before any change is committed.
 - `DeleteTargetGroup` is rejected with `ResourceInUse` while the target group is referenced by any listener or rule.
