@@ -53,9 +53,11 @@ import java.util.function.Supplier;
 import static io.github.hectorvent.floci.services.elbv2.ElbV2PublicationTestSupport.allowPublications;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -816,6 +818,113 @@ class ElbV2ServiceTest {
             service.registerTargets(REGION, tgArn, List.of(target));
         }
         assertEquals(4, service.describeTargetGroups(REGION, null, List.of(tgArn), null).getFirst().getTargets().size());
+    }
+
+    /**
+     * A target group's port is the one its targets receive traffic on unless a registration overrides
+     * it, so every target type but Lambda needs one, the default instance type included. AWS refuses a
+     * group without one, whatever its protocol, and nothing is created or monitored.
+     */
+    @ParameterizedTest
+    @CsvSource(nullValues = "NONE", value = {"NONE,NONE,NONE", "instance,HTTP,vpc-a", "ip,HTTPS,vpc-a", "ip,TCP,vpc-a"})
+    void createTargetGroupWithoutAPortIsRefused(String targetType, String protocol, String vpcId) {
+        AwsException refusal = assertThrows(AwsException.class, () -> service.createTargetGroup(
+                REGION, "no-port-tg", protocol, null, null, vpcId, targetType,
+                null, null, null, null, null, null, null, null, null, null, Map.of()));
+
+        assertEquals("ValidationError", refusal.getErrorCode());
+        assertEquals("A port must be specified", refusal.getMessage());
+        assertEquals(400, refusal.getHttpStatus());
+        assertTrue(service.describeTargetGroups(REGION, null, List.of(), List.of()).isEmpty());
+        verifyNoInteractions(healthChecker);
+    }
+
+    @Test
+    void aLambdaTargetGroupNeedsNoPort() {
+        TargetGroup group = service.createTargetGroup(REGION, "function-tg", null, null, null, null, "lambda",
+                null, null, null, null, null, null, null, null, null, null, Map.of());
+
+        assertEquals("lambda", group.getTargetType());
+        assertNull(group.getPort());
+    }
+
+    /**
+     * A target registered without a port receives traffic on its group's port, so it is the target
+     * registered with that port, whichever of the two forms came first: registering the other form
+     * replaces it instead of adding a second target, and DescribeTargetHealth reports the port. The
+     * same instance on another port is a separate target.
+     */
+    @ParameterizedTest
+    @CsvSource(nullValues = "NONE", value = {"NONE,9999", "9999,NONE"})
+    void aTargetRegisteredWithoutAPortIsTheTargetAtItsGroupsPort(Integer firstPort, Integer secondPort) {
+        String tgArn = createTargetGroup("default-port-tg");
+        service.registerTargets(REGION, tgArn, List.of(target("i-default", firstPort), target("i-default", 10000)));
+
+        service.registerTargets(REGION, tgArn, List.of(target("i-default", secondPort)));
+
+        when(healthChecker.getHealth(eq(tgArn), eq("i-default"), anyInt())).thenReturn(
+                new ElbV2HealthChecker.TargetHealthStatus("initial", "Elb.RegistrationInProgress", null));
+        List<String> registered = service.describeTargetHealth(REGION, tgArn, null).stream()
+                .map(health -> health.getTarget().getId() + ":" + health.getTarget().getPort()
+                        + " checked on " + health.getHealthCheckPort())
+                .sorted()
+                .toList();
+        assertEquals(List.of("i-default:10000 checked on 10000", "i-default:9999 checked on 9999"), registered);
+    }
+
+    /**
+     * DeregisterTargets needs a target's port only when the target was registered with a port
+     * override. Without one it removes the target at the group's port, however that target was
+     * registered, and leaves the same instance on another port, as it does when the port is named.
+     */
+    @ParameterizedTest
+    @CsvSource(nullValues = "NONE", value = {"NONE,NONE", "NONE,9999", "9999,NONE", "9999,9999"})
+    void deregisterTargetsRemovesTheTargetAtItsGroupsPortWithOrWithoutThePort(Integer registeredPort,
+                                                                             Integer deregisteredPort) {
+        String tgArn = createTargetGroup("remove-default-port-tg");
+        service.registerTargets(REGION, tgArn, List.of(target("i-default", registeredPort),
+                target("i-default", 10000)));
+        TargetDescription removal = target("i-default", deregisteredPort);
+
+        service.deregisterTargets(REGION, tgArn, List.of(removal));
+
+        List<TargetDescription> left = service.describeTargetGroups(REGION, null, List.of(tgArn), null)
+                .getFirst().getTargets();
+        assertEquals(1, left.size());
+        assertEquals(10000, left.getFirst().getPort());
+        TargetHealth removed = service.describeTargetHealth(REGION, tgArn, List.of(removal)).getFirst();
+        assertEquals("unused", removed.getState());
+        assertEquals("Target.NotRegistered", removed.getReason());
+    }
+
+    /**
+     * Targets an earlier version saved as they were registered, without a port, are still the targets
+     * at their group's port: registering one with that port replaces it, and deregistering one with
+     * that port removes it.
+     */
+    @Test
+    void aTargetSavedWithoutAPortIsStillTheTargetAtItsGroupsPort() {
+        String tgArn = createTargetGroup("saved-without-port-tg");
+        List<TargetDescription> saved = service.describeTargetGroups(REGION, null, List.of(tgArn), null)
+                .getFirst().getTargets();
+        saved.add(target("i-replaced", null));
+        saved.add(target("i-removed", null));
+        assertEquals(2, service.describeTargetGroups(REGION, null, List.of(tgArn), null)
+                .getFirst().getTargets().size());
+
+        service.registerTargets(REGION, tgArn, List.of(target("i-replaced", 9999)));
+        service.deregisterTargets(REGION, tgArn, List.of(target("i-removed", 9999)));
+
+        List<TargetDescription> left = service.describeTargetGroups(REGION, null, List.of(tgArn), null)
+                .getFirst().getTargets();
+        assertEquals(List.of("i-replaced:9999"), left.stream().map(t -> t.getId() + ":" + t.getPort()).toList());
+    }
+
+    private static TargetDescription target(String id, Integer port) {
+        TargetDescription target = new TargetDescription();
+        target.setId(id);
+        target.setPort(port);
+        return target;
     }
 
     private String createTargetGroup(String name) {

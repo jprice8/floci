@@ -71,6 +71,7 @@ import software.amazon.awssdk.services.elasticloadbalancingv2.model.Tag;
 import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetDescription;
 import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetGroup;
 import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetGroupAttribute;
+import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetGroupNotFoundException;
 import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetHealthDescription;
 import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetHealthReasonEnum;
 import software.amazon.awssdk.services.elasticloadbalancingv2.model.TargetHealthStateEnum;
@@ -423,6 +424,48 @@ class ElbV2Test {
         assertThat(health.targetHealth().state()).isEqualTo(TargetHealthStateEnum.UNUSED);
         assertThat(health.targetHealth().reason()).isEqualTo(TargetHealthReasonEnum.TARGET_NOT_REGISTERED);
         assertThat(health.targetHealth().description()).isEqualTo("Target is not registered to the target group");
+    }
+
+    @Test
+    @Order(17)
+    @DisplayName("CreateTargetGroup - a group for instances without Port is a ValidationError")
+    void createTargetGroupWithoutPort() {
+        String name = TestFixtures.uniqueName("sdk-no-port");
+        assertThatThrownBy(() -> elb.createTargetGroup(r -> r.name(name).protocol(ProtocolEnum.HTTP)
+                        .targetType(TargetTypeEnum.INSTANCE)))
+                .isInstanceOfSatisfying(ElasticLoadBalancingV2Exception.class, e -> {
+                    assertThat(e.statusCode()).isEqualTo(400);
+                    assertThat(e.awsErrorDetails().errorCode()).isEqualTo("ValidationError");
+                    assertThat(e.awsErrorDetails().errorMessage()).isEqualTo("A port must be specified");
+                });
+        assertThatThrownBy(() -> elb.describeTargetGroups(r -> r.names(name)))
+                .isInstanceOf(TargetGroupNotFoundException.class);
+    }
+
+    @Test
+    @Order(18)
+    @DisplayName("RegisterTargets - a target without Port is the target at the group's port")
+    void targetWithoutPortIsTheTargetAtTheGroupPort() {
+        String arn = elb.createTargetGroup(r -> r.name(TestFixtures.uniqueName("sdk-tg-port"))
+                        .protocol(ProtocolEnum.HTTP).port(8080).targetType(TargetTypeEnum.INSTANCE))
+                .targetGroups().get(0).targetGroupArn();
+        String instance = "i-0a1b2c3d4e5f60011";
+        try {
+            elb.registerTargets(r -> r.targetGroupArn(arn).targets(
+                    TargetDescription.builder().id(instance).port(8080).build(),
+                    TargetDescription.builder().id(instance).port(9090).build()));
+            elb.registerTargets(r -> r.targetGroupArn(arn).targets(TargetDescription.builder().id(instance).build()));
+            assertThat(elb.describeTargetHealth(r -> r.targetGroupArn(arn)).targetHealthDescriptions())
+                    .extracting(health -> health.target().port())
+                    .containsExactlyInAnyOrder(8080, 9090);
+
+            elb.deregisterTargets(r -> r.targetGroupArn(arn).targets(TargetDescription.builder().id(instance).build()));
+            assertThat(elb.describeTargetHealth(r -> r.targetGroupArn(arn)).targetHealthDescriptions())
+                    .extracting(health -> health.target().port())
+                    .containsExactly(9090);
+        } finally {
+            elb.deleteTargetGroup(r -> r.targetGroupArn(arn));
+        }
     }
 
     // ─── Listeners ───────────────────────────────────────────────────────────
