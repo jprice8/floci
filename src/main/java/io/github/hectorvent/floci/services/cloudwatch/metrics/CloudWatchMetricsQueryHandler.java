@@ -7,7 +7,9 @@ import io.github.hectorvent.floci.core.common.Pagination;
 import io.github.hectorvent.floci.core.common.XmlBuilder;
 import io.github.hectorvent.floci.services.cloudwatch.dashboards.CloudWatchDashboardsService;
 import io.github.hectorvent.floci.services.cloudwatch.dashboards.model.Dashboard;
+import io.github.hectorvent.floci.services.cloudwatch.metrics.model.Alarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.AlarmMetricDataQuery;
+import io.github.hectorvent.floci.services.cloudwatch.metrics.model.CompositeAlarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.Dimension;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.MetricAlarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.MetricDatum;
@@ -59,6 +61,7 @@ public class CloudWatchMetricsQueryHandler {
             case "GetMetricStatistics" -> handleGetMetricStatistics(params, region);
             case "GetMetricData" -> handleGetMetricData(params, region);
             case "PutMetricAlarm" -> handlePutMetricAlarm(params, region);
+            case "PutCompositeAlarm" -> handlePutCompositeAlarm(params, region);
             case "DescribeAlarms" -> handleDescribeAlarms(params, region);
             case "DeleteAlarms" -> handleDeleteAlarms(params, region);
             case "SetAlarmState" -> handleSetAlarmState(params, region);
@@ -244,23 +247,64 @@ public class CloudWatchMetricsQueryHandler {
         return Response.ok(AwsQueryResponse.envelopeNoResult("PutMetricAlarm", null)).build();
     }
 
-    private Response handleDescribeAlarms(MultivaluedMap<String, String> params, String region) {
-        List<String> alarmNames = new ArrayList<>();
+    private Response handlePutCompositeAlarm(MultivaluedMap<String, String> params, String region) {
+        CompositeAlarm alarm = new CompositeAlarm();
+        alarm.setAlarmName(params.getFirst("AlarmName"));
+        alarm.setAlarmDescription(params.getFirst("AlarmDescription"));
+        alarm.setAlarmRule(params.getFirst("AlarmRule"));
+        String actionsEnabled = params.getFirst("ActionsEnabled");
+        alarm.setActionsEnabled(actionsEnabled == null || Boolean.parseBoolean(actionsEnabled));
+        alarm.setActionsSuppressor(params.getFirst("ActionsSuppressor"));
+        alarm.setActionsSuppressorWaitPeriod(optionalInteger(params.getFirst("ActionsSuppressorWaitPeriod")));
+        alarm.setActionsSuppressorExtensionPeriod(optionalInteger(params.getFirst("ActionsSuppressorExtensionPeriod")));
+        alarm.setAlarmActions(members(params, "AlarmActions"));
+        alarm.setOkActions(members(params, "OKActions"));
+        alarm.setInsufficientDataActions(members(params, "InsufficientDataActions"));
+        Map<String, String> tags = new LinkedHashMap<>();
         for (int i = 1; ; i++) {
-            String name = params.getFirst("AlarmNames.member." + i);
-            if (name == null) break;
-            alarmNames.add(name);
+            String key = params.getFirst("Tags.member." + i + ".Key");
+            if (key == null) break;
+            tags.put(key, params.getFirst("Tags.member." + i + ".Value"));
         }
+        alarm.setTags(tags);
+
+        metricsService.putCompositeAlarm(alarm, region);
+        return Response.ok(AwsQueryResponse.envelopeNoResult("PutCompositeAlarm", null)).build();
+    }
+
+    private Response handleDescribeAlarms(MultivaluedMap<String, String> params, String region) {
+        List<String> alarmNames = members(params, "AlarmNames");
         String prefix = params.getFirst("AlarmNamePrefix");
+        List<String> alarmTypes = members(params, "AlarmTypes");
+        CloudWatchMetricsService.validateAlarmTypes(alarmTypes);
 
-        List<MetricAlarm> alarms = metricsService.describeAlarms(alarmNames, prefix, region);
+        // Without AlarmTypes, AWS returns metric alarms only.
+        List<MetricAlarm> alarms = alarmTypes.isEmpty() || alarmTypes.contains("MetricAlarm")
+                ? metricsService.describeAlarms(alarmNames, prefix, region) : List.of();
+        List<CompositeAlarm> composites = alarmTypes.contains("CompositeAlarm")
+                ? metricsService.describeCompositeAlarms(alarmNames, prefix, region) : List.of();
 
-        XmlBuilder xml = new XmlBuilder().start("MetricAlarms");
+        XmlBuilder xml = new XmlBuilder().start("CompositeAlarms");
+        for (CompositeAlarm a : composites) {
+            toCompositeAlarmXml(xml, a);
+        }
+        xml.end("CompositeAlarms").start("MetricAlarms");
         for (MetricAlarm a : alarms) {
             toAlarmXml(xml, a);
         }
         xml.end("MetricAlarms");
         return Response.ok(AwsQueryResponse.envelope("DescribeAlarms", null, xml.build())).build();
+    }
+
+    /** The values of a Query list parameter, {@code <name>.member.1} onwards. */
+    private static List<String> members(MultivaluedMap<String, String> params, String name) {
+        List<String> values = new ArrayList<>();
+        for (int i = 1; ; i++) {
+            String value = params.getFirst(name + ".member." + i);
+            if (value == null) break;
+            values.add(value);
+        }
+        return values;
     }
 
     private Response handleDeleteAlarms(MultivaluedMap<String, String> params, String region) {
@@ -782,9 +826,22 @@ public class CloudWatchMetricsQueryHandler {
         return value == null ? null : Integer.valueOf(value);
     }
 
-    private void toAlarmXml(XmlBuilder xml, MetricAlarm a) {
-        xml.start("member")
-                .elem("AlarmName", a.getAlarmName())
+    private void toCompositeAlarmXml(XmlBuilder xml, CompositeAlarm a) {
+        xml.start("member");
+        alarmIdentityXml(xml, a);
+        xml.elem("AlarmRule", a.getAlarmRule())
+                .elem("ActionsSuppressor", a.getActionsSuppressor())
+                .elem("ActionsSuppressorWaitPeriod", a.getActionsSuppressorWaitPeriod() == null
+                        ? null : a.getActionsSuppressorWaitPeriod().toString())
+                .elem("ActionsSuppressorExtensionPeriod", a.getActionsSuppressorExtensionPeriod() == null
+                        ? null : a.getActionsSuppressorExtensionPeriod().toString());
+        alarmStateXml(xml, a);
+        xml.end("member");
+    }
+
+    /** The configuration members metric and composite alarms share. */
+    private void alarmIdentityXml(XmlBuilder xml, Alarm a) {
+        xml.elem("AlarmName", a.getAlarmName())
                 .elem("AlarmArn", a.getAlarmArn())
                 .elem("AlarmDescription", a.getAlarmDescription());
         xml.start("AlarmActions");
@@ -799,6 +856,20 @@ public class CloudWatchMetricsQueryHandler {
         xml.start("InsufficientDataActions");
         a.getInsufficientDataActions().forEach(act -> xml.elem("member", act));
         xml.end("InsufficientDataActions");
+    }
+
+    /** The state members metric and composite alarms share. */
+    private void alarmStateXml(XmlBuilder xml, Alarm a) {
+        xml.elem("StateValue", a.getStateValue())
+                .elem("StateReason", a.getStateReason())
+                .elem("StateReasonData", a.getStateReasonData())
+                .elem("StateUpdatedTimestamp", Instant.ofEpochSecond(a.getStateUpdatedTimestamp()).toString())
+                .elem("StateTransitionedTimestamp", Instant.ofEpochSecond(a.getStateTransitionedTimestamp()).toString());
+    }
+
+    private void toAlarmXml(XmlBuilder xml, MetricAlarm a) {
+        xml.start("member");
+        alarmIdentityXml(xml, a);
         if (!a.getMetrics().isEmpty()) {
             toAlarmMetricsXml(xml, a.getMetrics());
         } else {
@@ -814,11 +885,8 @@ public class CloudWatchMetricsQueryHandler {
                     .elem("Unit", a.getUnit());
         }
 
-        xml.elem("StateValue", a.getStateValue())
-                .elem("StateReason", a.getStateReason())
-                .elem("StateReasonData", a.getStateReasonData())
-                .elem("StateUpdatedTimestamp", Instant.ofEpochSecond(a.getStateUpdatedTimestamp()).toString())
-                .elem("EvaluationPeriods", String.valueOf(a.getEvaluationPeriods()))
+        alarmStateXml(xml, a);
+        xml.elem("EvaluationPeriods", String.valueOf(a.getEvaluationPeriods()))
                 .elem("Threshold", String.valueOf(a.getThreshold()))
                 .elem("ComparisonOperator", a.getComparisonOperator())
                 .elem("TreatMissingData", a.getTreatMissingData());

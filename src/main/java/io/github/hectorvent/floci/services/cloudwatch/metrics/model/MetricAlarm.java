@@ -31,6 +31,9 @@ public class MetricAlarm extends Alarm {
     private String treatMissingData = "missing";
     private String evaluateLowSampleCountPercentile;
 
+    @Override
+    public String getAlarmType() { return "MetricAlarm"; }
+
     public String getMetricName() { return metricName; }
     public void setMetricName(String metricName) { this.metricName = metricName; }
 

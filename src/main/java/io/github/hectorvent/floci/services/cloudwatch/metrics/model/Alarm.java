@@ -1,6 +1,8 @@
 package io.github.hectorvent.floci.services.cloudwatch.metrics.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import java.time.Instant;
@@ -9,9 +11,21 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** The members every kind of CloudWatch alarm has, whatever decides its state. */
+/**
+ * The members metric and composite alarms share. Both live in one store keyed by region and
+ * name, because AWS keeps alarm names unique across the two kinds.
+ *
+ * <p>The stored {@code alarmType} tells the kinds apart on reload; an entry written before
+ * composite alarms existed has none and loads as a {@link MetricAlarm}.
+ */
 @RegisterForReflection
 @JsonIgnoreProperties(ignoreUnknown = true)
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.EXISTING_PROPERTY,
+        property = "alarmType", defaultImpl = MetricAlarm.class)
+@JsonSubTypes({
+        @JsonSubTypes.Type(value = MetricAlarm.class, name = "MetricAlarm"),
+        @JsonSubTypes.Type(value = CompositeAlarm.class, name = "CompositeAlarm")
+})
 public abstract class Alarm {
     private String alarmName;
     private String alarmArn;
@@ -25,6 +39,7 @@ public abstract class Alarm {
     private String stateReason = "Unchecked";
     private String stateReasonData;
     private long stateUpdatedTimestamp;
+    private long stateTransitionedTimestamp;
     private Map<String, String> tags = new HashMap<>();
     private String region;
 
@@ -33,6 +48,9 @@ public abstract class Alarm {
         this.alarmConfigurationUpdatedTimestamp = now;
         this.stateUpdatedTimestamp = now;
     }
+
+    /** {@code MetricAlarm} or {@code CompositeAlarm}, the values {@code DescribeAlarms} filters on. */
+    public abstract String getAlarmType();
 
     public String getAlarmName() { return alarmName; }
     public void setAlarmName(String alarmName) { this.alarmName = alarmName; }
@@ -69,6 +87,15 @@ public abstract class Alarm {
 
     public long getStateUpdatedTimestamp() { return stateUpdatedTimestamp; }
     public void setStateUpdatedTimestamp(long stateUpdatedTimestamp) { this.stateUpdatedTimestamp = stateUpdatedTimestamp; }
+
+    /**
+     * When {@code StateValue} last changed. An alarm that never changed state, or one stored
+     * before this was recorded, reports its last state update instead.
+     */
+    public long getStateTransitionedTimestamp() {
+        return stateTransitionedTimestamp > 0 ? stateTransitionedTimestamp : stateUpdatedTimestamp;
+    }
+    public void setStateTransitionedTimestamp(long timestamp) { this.stateTransitionedTimestamp = timestamp; }
 
     public Map<String, String> getTags() { return tags; }
     public void setTags(Map<String, String> tags) { this.tags = tags; }

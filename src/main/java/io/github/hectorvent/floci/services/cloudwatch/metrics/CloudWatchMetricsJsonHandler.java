@@ -8,7 +8,9 @@ import io.github.hectorvent.floci.core.common.AwsErrorResponse;
 import io.github.hectorvent.floci.core.common.PaginatedResult;
 import io.github.hectorvent.floci.services.cloudwatch.dashboards.CloudWatchDashboardsService;
 import io.github.hectorvent.floci.services.cloudwatch.dashboards.model.Dashboard;
+import io.github.hectorvent.floci.services.cloudwatch.metrics.model.Alarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.AlarmMetricDataQuery;
+import io.github.hectorvent.floci.services.cloudwatch.metrics.model.CompositeAlarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.Dimension;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.MetricAlarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.MetricDatum;
@@ -58,6 +60,7 @@ public class CloudWatchMetricsJsonHandler {
             case "ListMetrics" -> handleListMetrics(request, region);
             case "GetMetricStatistics" -> handleGetMetricStatistics(request, region);
             case "PutMetricAlarm" -> handlePutMetricAlarm(request, region);
+            case "PutCompositeAlarm" -> handlePutCompositeAlarm(request, region);
             case "DescribeAlarms" -> handleDescribeAlarms(request, region);
             case "DeleteAlarms" -> handleDeleteAlarms(request, region);
             case "SetAlarmState" -> handleSetAlarmState(request, region);
@@ -203,6 +206,28 @@ public class CloudWatchMetricsJsonHandler {
         return Response.ok(objectMapper.createObjectNode()).build();
     }
 
+    private Response handlePutCompositeAlarm(JsonNode request, String region) {
+        CompositeAlarm alarm = new CompositeAlarm();
+        alarm.setAlarmName(request.path("AlarmName").asText(null));
+        alarm.setAlarmDescription(request.path("AlarmDescription").asText(null));
+        alarm.setAlarmRule(request.path("AlarmRule").asText(null));
+        alarm.setActionsEnabled(request.path("ActionsEnabled").asBoolean(true));
+        alarm.setActionsSuppressor(request.path("ActionsSuppressor").asText(null));
+        alarm.setActionsSuppressorWaitPeriod(request.hasNonNull("ActionsSuppressorWaitPeriod")
+                ? request.path("ActionsSuppressorWaitPeriod").asInt() : null);
+        alarm.setActionsSuppressorExtensionPeriod(request.hasNonNull("ActionsSuppressorExtensionPeriod")
+                ? request.path("ActionsSuppressorExtensionPeriod").asInt() : null);
+        request.path("AlarmActions").forEach(a -> alarm.getAlarmActions().add(a.asText()));
+        request.path("OKActions").forEach(a -> alarm.getOkActions().add(a.asText()));
+        request.path("InsufficientDataActions").forEach(a -> alarm.getInsufficientDataActions().add(a.asText()));
+        Map<String, String> tags = new LinkedHashMap<>();
+        request.path("Tags").forEach(t -> tags.put(t.path("Key").asText(), t.path("Value").asText()));
+        alarm.setTags(tags);
+
+        metricsService.putCompositeAlarm(alarm, region);
+        return Response.ok(objectMapper.createObjectNode()).build();
+    }
+
     private Response handleDescribeAlarms(JsonNode request, String region) {
         List<String> alarmNames = new ArrayList<>();
         JsonNode namesNode = request.path("AlarmNames");
@@ -210,22 +235,35 @@ public class CloudWatchMetricsJsonHandler {
             namesNode.forEach(n -> alarmNames.add(n.asText()));
         }
         String prefix = request.has("AlarmNamePrefix") ? request.path("AlarmNamePrefix").asText() : null;
+        List<String> alarmTypes = new ArrayList<>();
+        request.path("AlarmTypes").forEach(t -> alarmTypes.add(t.asText()));
+        CloudWatchMetricsService.validateAlarmTypes(alarmTypes);
 
-        List<MetricAlarm> alarms = metricsService.describeAlarms(alarmNames, prefix, region);
+        // Without AlarmTypes, AWS returns metric alarms only.
+        List<MetricAlarm> alarms = alarmTypes.isEmpty() || alarmTypes.contains("MetricAlarm")
+                ? metricsService.describeAlarms(alarmNames, prefix, region) : List.of();
+        List<CompositeAlarm> composites = alarmTypes.contains("CompositeAlarm")
+                ? metricsService.describeCompositeAlarms(alarmNames, prefix, region) : List.of();
 
         ObjectNode response = objectMapper.createObjectNode();
+        ArrayNode compositeArray = response.putArray("CompositeAlarms");
+        for (CompositeAlarm a : composites) {
+            ObjectNode node = compositeArray.addObject();
+            putAlarmIdentity(node, a);
+            node.put("AlarmRule", a.getAlarmRule());
+            if (a.getActionsSuppressor() != null) node.put("ActionsSuppressor", a.getActionsSuppressor());
+            if (a.getActionsSuppressorWaitPeriod() != null) {
+                node.put("ActionsSuppressorWaitPeriod", a.getActionsSuppressorWaitPeriod());
+            }
+            if (a.getActionsSuppressorExtensionPeriod() != null) {
+                node.put("ActionsSuppressorExtensionPeriod", a.getActionsSuppressorExtensionPeriod());
+            }
+            putAlarmState(node, a);
+        }
         ArrayNode arr = response.putArray("MetricAlarms");
         for (MetricAlarm a : alarms) {
             ObjectNode node = arr.addObject();
-            node.put("AlarmName", a.getAlarmName());
-            if (a.getAlarmArn() != null) node.put("AlarmArn", a.getAlarmArn());
-            if (a.getAlarmDescription() != null) node.put("AlarmDescription", a.getAlarmDescription());
-            ArrayNode alarmActions = node.putArray("AlarmActions");
-            a.getAlarmActions().forEach(alarmActions::add);
-            ArrayNode okActions = node.putArray("OKActions");
-            a.getOkActions().forEach(okActions::add);
-            ArrayNode insufficientDataActions = node.putArray("InsufficientDataActions");
-            a.getInsufficientDataActions().forEach(insufficientDataActions::add);
+            putAlarmIdentity(node, a);
             if (!a.getMetrics().isEmpty()) {
                 node.set("Metrics", objectMapper.valueToTree(a.getMetrics()));
             } else {
@@ -258,13 +296,33 @@ public class CloudWatchMetricsJsonHandler {
             node.put("Threshold", a.getThreshold());
             if (a.getComparisonOperator() != null) node.put("ComparisonOperator", a.getComparisonOperator());
             if (a.getTreatMissingData() != null) node.put("TreatMissingData", a.getTreatMissingData());
-            node.put("ActionsEnabled", a.isActionsEnabled());
-            if (a.getStateValue() != null) node.put("StateValue", a.getStateValue());
-            if (a.getStateReason() != null) node.put("StateReason", a.getStateReason());
-            if (a.getStateReasonData() != null) node.put("StateReasonData", a.getStateReasonData());
-            node.put("StateUpdatedTimestamp", a.getStateUpdatedTimestamp());
+            putAlarmState(node, a);
         }
         return Response.ok(response).build();
+    }
+
+    /** The configuration members metric and composite alarms share. */
+    private static void putAlarmIdentity(ObjectNode node, Alarm a) {
+        node.put("AlarmName", a.getAlarmName());
+        if (a.getAlarmArn() != null) node.put("AlarmArn", a.getAlarmArn());
+        if (a.getAlarmDescription() != null) node.put("AlarmDescription", a.getAlarmDescription());
+        ArrayNode alarmActions = node.putArray("AlarmActions");
+        a.getAlarmActions().forEach(alarmActions::add);
+        ArrayNode okActions = node.putArray("OKActions");
+        a.getOkActions().forEach(okActions::add);
+        ArrayNode insufficientDataActions = node.putArray("InsufficientDataActions");
+        a.getInsufficientDataActions().forEach(insufficientDataActions::add);
+        node.put("ActionsEnabled", a.isActionsEnabled());
+        node.put("AlarmConfigurationUpdatedTimestamp", a.getAlarmConfigurationUpdatedTimestamp());
+    }
+
+    /** The state members metric and composite alarms share. */
+    private static void putAlarmState(ObjectNode node, Alarm a) {
+        if (a.getStateValue() != null) node.put("StateValue", a.getStateValue());
+        if (a.getStateReason() != null) node.put("StateReason", a.getStateReason());
+        if (a.getStateReasonData() != null) node.put("StateReasonData", a.getStateReasonData());
+        node.put("StateUpdatedTimestamp", a.getStateUpdatedTimestamp());
+        node.put("StateTransitionedTimestamp", a.getStateTransitionedTimestamp());
     }
 
     private Response handleDeleteAlarms(JsonNode request, String region) {

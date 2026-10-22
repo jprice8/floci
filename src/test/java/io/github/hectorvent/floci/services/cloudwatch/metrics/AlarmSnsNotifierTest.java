@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.core.storage.InMemoryStorage;
+import io.github.hectorvent.floci.services.cloudwatch.metrics.model.CompositeAlarm;
 import io.github.hectorvent.floci.services.cloudwatch.metrics.model.MetricAlarm;
 import io.github.hectorvent.floci.services.sns.SnsService;
 import org.junit.jupiter.api.BeforeEach;
@@ -12,6 +13,11 @@ import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -123,5 +129,113 @@ class AlarmSnsNotifierTest {
         alarm.setAlarmActions(List.of(topic));
         service.setAlarmState("test-alarm", "ALARM", "breached", null, REGION);
         verify(sns).publish(eq(topic), isNull(), contains("arn:aws-cn:cloudwatch:"), anyString(), eq("cn-north-1"));
+    }
+
+    @Test
+    void compositeTransitionsPublishTheCompositeSchemaWithTheTriggeringChild() throws Exception {
+        alarm.setActionsEnabled(false);
+        CompositeAlarm composite = composite("watcher", "ALARM(\"test-alarm\")");
+        service.setAlarmState("test-alarm", "ALARM", "breached", null, REGION);
+
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> subjects = ArgumentCaptor.forClass(String.class);
+        verify(sns, times(2)).publish(eq(TOPIC), isNull(), messages.capture(), subjects.capture(), eq(REGION));
+        JsonNode created = mapper.readTree(messages.getAllValues().getFirst());
+        assertEquals("INSUFFICIENT_DATA", created.path("OldStateValue").asText());
+        assertEquals("OK", created.path("NewStateValue").asText());
+        assertEquals(composite.getAlarmArn() + " was created and its alarm rule evaluates to OK",
+                created.path("NewStateReason").asText());
+
+        JsonNode payload = mapper.readTree(messages.getAllValues().getLast());
+        assertEquals("ALARM: \"watcher\"", subjects.getAllValues().getLast());
+        assertEquals("watcher", payload.path("AlarmName").asText());
+        assertEquals("000000000000", payload.path("AWSAccountId").asText());
+        assertEquals("OK", payload.path("OldStateValue").asText());
+        assertEquals("ALARM", payload.path("NewStateValue").asText());
+        assertTrue(payload.path("NewStateReason").asText()
+                .startsWith(alarm.getAlarmArn() + " transitioned to ALARM at "), payload.toString());
+        assertEquals("ALARM(\"test-alarm\")", payload.path("AlarmRule").asText());
+        assertEquals(composite.getAlarmArn(), payload.path("AlarmArn").asText());
+        assertEquals("US East (N. Virginia)", payload.path("Region").asText());
+        assertEquals(1, payload.path("TriggeringChildren").size());
+        JsonNode child = payload.path("TriggeringChildren").get(0);
+        assertEquals(alarm.getAlarmArn(), child.path("Arn").asText());
+        assertEquals("ALARM", child.path("State").path("Value").asText());
+        assertTrue(child.path("State").path("Timestamp").asText()
+                .matches("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}\\+0000"));
+        assertFalse(payload.has("Trigger"));
+        assertFalse(payload.has("AlarmConfigurationUpdatedTimestamp"));
+    }
+
+    @Test
+    void aCompositeWithActionsDisabledOrAManualStateWithoutDataStillBehaves() throws Exception {
+        CompositeAlarm quiet = composite("quiet", "ALARM(\"test-alarm\")");
+        quiet.setActionsEnabled(false);
+        CompositeAlarm loud = composite("loud", "TRUE");
+        clearInvocations(sns);
+        service.setAlarmState("test-alarm", "ALARM", "breached", null, REGION);
+        service.setAlarmState("loud", "OK", "manual", null, REGION);
+
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        verify(sns, times(2)).publish(eq(TOPIC), isNull(), messages.capture(), anyString(), eq(REGION));
+        assertEquals("test-alarm", mapper.readTree(messages.getAllValues().getFirst()).path("AlarmName").asText());
+        JsonNode manual = mapper.readTree(messages.getAllValues().getLast());
+        assertEquals(loud.getAlarmName(), manual.path("AlarmName").asText());
+        assertEquals("manual", manual.path("NewStateReason").asText());
+        assertEquals(0, manual.path("TriggeringChildren").size());
+        assertEquals("ALARM", service.describeCompositeAlarms(List.of("quiet"), null, REGION).getFirst().getStateValue());
+    }
+
+    @Test
+    void aBlockedPublishDoesNotHoldUpOtherAlarmChanges() throws Exception {
+        CountDownLatch publishing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        doAnswer(call -> {
+            if (call.<String>getArgument(3).startsWith("ALARM:")) {
+                publishing.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+            }
+            return "message-id";
+        }).when(sns).publish(eq(TOPIC), isNull(), anyString(), anyString(), eq(REGION));
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> transition = executor.submit(() ->
+                    service.setAlarmState("test-alarm", "ALARM", "breached", null, REGION));
+            try {
+                assertTrue(publishing.await(2, TimeUnit.SECONDS));
+                Future<?> other = executor.submit(() -> {
+                    composite("unrelated", "FALSE");
+                    service.setAlarmState("test-alarm", "OK", "recovered", null, REGION);
+                });
+                other.get(2, TimeUnit.SECONDS);
+                assertEquals("OK", alarm.getStateValue());
+            } finally {
+                release.countDown();
+            }
+            transition.get(2, TimeUnit.SECONDS);
+        }
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        verify(sns, times(3)).publish(eq(TOPIC), isNull(), messages.capture(), anyString(), eq(REGION));
+        List<String> states = messages.getAllValues().stream()
+                .map(message -> {
+                    try {
+                        return mapper.readTree(message).path("AlarmName").asText() + " "
+                                + mapper.readTree(message).path("NewStateValue").asText();
+                    } catch (Exception e) {
+                        throw new AssertionError(e);
+                    }
+                }).toList();
+        assertEquals(List.of("test-alarm ALARM", "unrelated OK", "test-alarm OK"), states);
+    }
+
+    private CompositeAlarm composite(String name, String rule) {
+        CompositeAlarm composite = new CompositeAlarm();
+        composite.setAlarmName(name);
+        composite.setAlarmRule(rule);
+        composite.setActionsEnabled(true);
+        composite.setAlarmActions(List.of(TOPIC));
+        composite.setOkActions(List.of(TOPIC));
+        service.putCompositeAlarm(composite, REGION);
+        return composite;
     }
 }

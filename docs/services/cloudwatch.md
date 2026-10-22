@@ -379,7 +379,8 @@ HTTP 404 `UnknownOperationException`. IAM policies use the `cloudwatch` action p
 | `GetMetricStatistics` | Get metric statistics (Average, Sum, etc.) |
 | `GetMetricData` | Query metrics with math expressions |
 | `PutMetricAlarm` | Create a metric alarm |
-| `DescribeAlarms` | List alarms |
+| `PutCompositeAlarm` | Create or update a composite alarm over other alarms' states |
+| `DescribeAlarms` | List metric alarms, or composite alarms with `AlarmTypes` |
 | `DeleteAlarms` | Delete alarms |
 | `SetAlarmState` | Manually set alarm state |
 | `PutMetricStream` | Create or update a metric stream definition |
@@ -409,6 +410,34 @@ State transitions publish to same-account standard SNS topics in `AlarmActions`,
 `ActionsEnabled=false` suppress notifications. Scaling action retries remain independent.
 Failures are logged per target without blocking other targets. Notifications include a
 single-metric `Trigger`; durable retries, FIFO topics, and metric-math payloads are not covered.
+A composite alarm's notification follows AWS's composite schema instead: `AlarmRule` and
+`TriggeringChildren` in place of `Trigger`.
+
+### Composite alarms
+
+`PutCompositeAlarm` stores a rule over other alarms' states: `ALARM(x)`, `OK(x)` and
+`INSUFFICIENT_DATA(x)` over an alarm name or ARN, quoted or not, `TRUE`, `FALSE`, `NOT`, `AND`,
+`OR`, parentheses and `AT_LEAST(M, [NOT] STATE, (x, ...))` with M a count or a percentage.
+`NOT` binds tighter than `AND`, and `AND` tighter than `OR`; keywords are case sensitive. As on
+AWS, a rule is limited to 10240 characters, 500 elements and 100 distinct child alarms, every
+alarm it names must already exist in the region, and a syntax error answers `ValidationError`
+with the token and position (`Error in AlarmRule [Unsupported token ...]`).
+
+A new composite alarm is evaluated at once. It is evaluated again when one of its children
+changes state, and when it is updated; an update keeps its state and tags (`Tags` apply on create
+only). `StateReason`, `StateReasonData` (`triggeringAlarms`) and
+`StateTransitionedTimestamp` follow AWS. A state set with `SetAlarmState` holds until a child
+changes state. Alarms on a cycle of composite alarms are not evaluated.
+
+`DescribeAlarms` returns composite alarms only when `AlarmTypes` includes `CompositeAlarm`.
+`DeleteAlarms` deletes nothing when the request names more than one composite alarm, or any
+alarm a composite alarm's rule references, even one deleted by the same request. Alarm names
+are unique across metric and composite alarms in a region.
+
+`ActionsSuppressor`, `ActionsSuppressorWaitPeriod` and `ActionsSuppressorExtensionPeriod` are
+stored and returned, but actions are not suppressed. `DescribeAlarms` ignores
+`ChildrenOfAlarmName` and `ParentsOfAlarmName`, and the quota of 150 composite alarms per child
+is not enforced.
 
 ### Metric-math alarm definitions
 
