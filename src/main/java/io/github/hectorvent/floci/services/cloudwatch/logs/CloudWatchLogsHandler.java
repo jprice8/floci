@@ -389,6 +389,10 @@ public class CloudWatchLogsHandler {
 
     private Response handleFilterLogEvents(JsonNode request, String region) {
         String groupName = resolveLogGroupName(request);
+        if (groupName == null || groupName.isBlank()) {
+            throw new AwsException("InvalidParameterException",
+                    "logGroupName or logGroupIdentifier is required.", 400);
+        }
         Long startTime = request.has("startTime") ? request.path("startTime").asLong() : null;
         Long endTime = request.has("endTime") ? request.path("endTime").asLong() : null;
         String filterPattern = request.path("filterPattern").asText(null);

@@ -74,7 +74,9 @@ One action is currently simplified:
 `FilterLogEvents` reads `filterPattern` with the filter pattern syntax described below, the one
 metric filters and subscription filters use: terms, quoted phrases, `?` alternatives, `-`
 exclusions, JSON and space-delimited patterns. An invalid pattern is refused with
-`InvalidParameterException`.
+`InvalidParameterException`, and so is a request that names no log group by `logGroupName` or
+`logGroupIdentifier`. A log group that does not exist in the request's region and account is
+refused with `ResourceNotFoundException`, even when the pattern's syntax is invalid.
 
 ### Subscription filters {#subscription-filters}
 
