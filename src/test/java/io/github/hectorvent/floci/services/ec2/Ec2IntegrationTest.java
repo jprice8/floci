@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -22,6 +23,7 @@ import java.util.zip.GZIPOutputStream;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.emptyOrNullString;
@@ -161,7 +163,25 @@ class Ec2IntegrationTest {
             .contentType("application/xml")
             .body("DescribeAvailabilityZonesResponse.availabilityZoneInfo.item.size()", equalTo(3))
             .body("DescribeAvailabilityZonesResponse.availabilityZoneInfo.item[0].zoneName",
-                    startsWith("us-east-1"));
+                    startsWith("us-east-1"))
+            .body("DescribeAvailabilityZonesResponse.availabilityZoneInfo.item.networkBorderGroup",
+                    contains("us-east-1", "us-east-1", "us-east-1"));
+    }
+
+    /** The network border group of an Availability Zone is its Region, in every partition. */
+    @ParameterizedTest
+    @ValueSource(strings = {"eu-west-1", "us-gov-west-1", "cn-north-1"})
+    @Order(4)
+    void describeAvailabilityZonesReportsTheRegionAsNetworkBorderGroup(String region) {
+        given()
+            .formParam("Action", "DescribeAvailabilityZones")
+            .header("Authorization", AUTH_HEADER.replace("us-east-1", region))
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeAvailabilityZonesResponse.availabilityZoneInfo.item.networkBorderGroup",
+                    contains(region, region, region));
     }
 
     // DescribeAvailabilityZones parameter validation and filtering

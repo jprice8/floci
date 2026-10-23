@@ -196,6 +196,10 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
             Pattern.compile("^tgw-rtb-[0-9a-f]{8}([0-9a-f]{9})?$");
     private static final Pattern TRANSIT_GATEWAY_ATTACHMENT_ID_PATTERN =
             Pattern.compile("^tgw-attach-[0-9a-f]{8}([0-9a-f]{9})?$");
+    // Only hex digits, colons and dots before the slash and a plain decimal prefix after it: no
+    // zone id or brackets, which InetAddress.ofLiteral accepts, and no sign or leading zero in the
+    // prefix, which Integer.parseInt accepts.
+    private static final Pattern PLAIN_IPV6_CIDR = Pattern.compile("[0-9A-Fa-f:.]+/(0|[1-9][0-9]{0,2})");
     private static final Set<String> ROUTE_TABLE_MEMBERSHIP_FILTER_NAMES =
             Set.of("resource-id", "resource-type", "transit-gateway-attachment-id");
     /**
@@ -6168,10 +6172,11 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
      * Allocates a /56 the way an Amazon-provided association looks on the wire. AWS hands out a
      * block from its own pool with no say from the caller, so the exact prefix is not something a
      * client can predict or assert on, what matters is that one is returned at all, that it is a
-     * well-formed /56, and that it comes back unchanged on every later read.
+     * well-formed /56 in RFC 5952 text, and that it comes back unchanged on every later read. A
+     * random group can start with a zero, which that text drops.
      */
     private VpcIpv6CidrBlockAssociation amazonProvidedIpv6Association(String region) {
-        String block = "2600:1f18:" + randomHex(4) + ":" + randomHex(2) + "00::/56";
+        String block = canonicalizeIpv6Cidr("2600:1f18:" + randomHex(4) + ":" + randomHex(2) + "00::/56");
         return new VpcIpv6CidrBlockAssociation("vpc-cidr-assoc-" + randomHex(8), block, region);
     }
 
@@ -6953,9 +6958,10 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
     }
 
     public Subnet createSubnet(String region, String vpcId, String requestedCidrBlock, String availabilityZone,
-                               String availabilityZoneId, String ipv6CidrBlock) {
-        // Canonical form, as AWS stores it; null (an IPv6-only subnet) stays null.
+                               String availabilityZoneId, String requestedIpv6CidrBlock) {
+        // The IPv4 block in canonical form, as AWS stores it; null (an IPv6-only subnet) stays null.
         String cidrBlock = canonicalizeIpv4Cidr(requestedCidrBlock);
+        String ipv6CidrBlock = canonicalizeIpv6Cidr(requestedIpv6CidrBlock);
         if (vpcId == null || vpcId.isBlank()) {
             throw new AwsException("MissingParameter", "The request must contain the parameter VpcId", 400);
         }
@@ -10574,9 +10580,10 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
      * makes the CreateSubnet overlap check see the real network. In every case it is also why the
      * Describe calls echo back the canonical form: the stored resource never holds anything else.
      *
-     * <p>Only IPv4 blocks are rewritten. DestinationIpv6CidrBlock and the IPv6 blocks of VPCs and
-     * subnets are left untouched, as is DestinationPrefixListId, which is an opaque ID, not a CIDR.
-     * A null block (an IPv6-only subnet) is returned as is.
+     * <p>Only IPv4 blocks are rewritten here; a subnet's IPv6 block goes through
+     * {@link #canonicalizeIpv6Cidr} instead. DestinationIpv6CidrBlock is left untouched, as is
+     * DestinationPrefixListId, which is an opaque ID, not a CIDR. A null block (an IPv6-only
+     * subnet) is returned as is.
      *
      * <p>A block that is not a well-formed "IPv4/prefix" is returned unchanged: this method does
      * not validate the request, it only reduces what is already well-formed. The unmodified value
@@ -10592,6 +10599,27 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
             return ipv4CidrBlock;
         }
         return CidrCanonicalizer.canonicalize(ipv4CidrBlock).orElse(ipv4CidrBlock);
+    }
+
+    /**
+     * Writes an IPv6 block as the RFC 5952 text of the network it names, so
+     * {@code 2600:1f18:0003:0000:0000:0000:0000:0000/64} becomes {@code 2600:1f18:3::/64}. AWS
+     * documents neither the letter case nor host bits of an IPv6 block, so lowercase follows
+     * RFC 5952 and the zeroed host bits follow the canonical form CreateSubnet documents for the
+     * IPv4 block.
+     *
+     * <p>As with {@link #canonicalizeIpv4Cidr}, anything else is returned unchanged: a value that
+     * is not a plain IPv6 CIDR (see {@link #PLAIN_IPV6_CIDR}) or does not parse, and one that names
+     * an IPv4 network, including an IPv4-mapped literal such as {@code ::ffff:10.0.0.0/24}, which
+     * the JDK parses as the IPv4 address it maps.
+     */
+    private static String canonicalizeIpv6Cidr(String ipv6CidrBlock) {
+        if (ipv6CidrBlock == null || !PLAIN_IPV6_CIDR.matcher(ipv6CidrBlock).matches()) {
+            return ipv6CidrBlock;
+        }
+        return CidrCanonicalizer.canonicalize(ipv6CidrBlock)
+                .filter(canonical -> canonical.contains(":"))
+                .orElse(ipv6CidrBlock);
     }
 
     /**
@@ -11902,6 +11930,7 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
             az.put("zoneName", zoneName);
             az.put("state", "available");
             az.put("regionName", region);
+            az.put("networkBorderGroup", region);
             az.put("zoneId", AvailabilityZoneIds.forZoneName(region, zoneName));
             az.put("zoneType", "availability-zone");
             az.put("optInStatus", "opt-in-not-required");
