@@ -268,8 +268,10 @@ public class CloudWatchMetricsQueryHandler {
 
     private Response handleDescribeAlarms(MultivaluedMap<String, String> params, String region) {
         CloudWatchMetricsService.DescribedAlarms described = metricsService.describeAlarms(
-                members(params, "AlarmNames"), params.getFirst("AlarmNamePrefix"), members(params, "AlarmTypes"),
-                params.getFirst("ChildrenOfAlarmName"), params.getFirst("ParentsOfAlarmName"), region);
+                new CloudWatchMetricsService.AlarmFilter(members(params, "AlarmNames"),
+                        params.getFirst("AlarmNamePrefix"), members(params, "AlarmTypes"),
+                        params.getFirst("StateValue"), params.getFirst("ActionPrefix"),
+                        params.getFirst("ChildrenOfAlarmName"), params.getFirst("ParentsOfAlarmName")), region);
 
         XmlBuilder xml = new XmlBuilder().start("CompositeAlarms");
         for (CompositeAlarm a : described.compositeAlarms()) {

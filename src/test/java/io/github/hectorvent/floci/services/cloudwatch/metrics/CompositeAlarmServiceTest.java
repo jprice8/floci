@@ -385,10 +385,42 @@ class CompositeAlarmServiceTest {
                 () -> describe(List.of(), null, List.of(), "outer", "leaf"),
                 () -> describe(List.of("leaf"), null, List.of(), "outer", null),
                 () -> describe(List.of(), "l", List.of(), null, "leaf"),
-                () -> describe(List.of(), null, List.of("CompositeAlarm"), null, "leaf"))) {
+                () -> describe(List.of(), null, List.of("CompositeAlarm"), null, "leaf"),
+                () -> service.describeAlarms(new CloudWatchMetricsService.AlarmFilter(List.of(), null, List.of(),
+                        "ALARM", null, "outer", null), REGION),
+                () -> service.describeAlarms(new CloudWatchMetricsService.AlarmFilter(List.of(), null, List.of(),
+                        null, "arn:", null, "leaf"), REGION))) {
             assertRejected("ChildrenOfAlarmName and ParentsOfAlarmName cannot be combined with each other or with "
                     + "any parameter except MaxRecords and NextToken.", combined);
         }
+    }
+
+    @Test
+    void stateValueAndActionPrefixNarrowBothKindsOverEveryActionList() {
+        String pager = "arn:aws:sns:" + REGION + ":" + ACCOUNT + ":pager";
+        metric("idle");
+        MetricAlarm paging = new MetricAlarm();
+        paging.setAlarmName("paging");
+        paging.setInsufficientDataActions(List.of(pager));
+        service.putMetricAlarm(paging, REGION);
+        CompositeAlarm summary = new CompositeAlarm();
+        summary.setAlarmName("summary");
+        summary.setAlarmRule("TRUE");
+        summary.setAlarmActions(List.of(pager));
+        service.putCompositeAlarm(summary, REGION);
+
+        List<String> both = List.of("MetricAlarm", "CompositeAlarm");
+        CloudWatchMetricsService.DescribedAlarms inAlarm = service.describeAlarms(
+                new CloudWatchMetricsService.AlarmFilter(List.of(), null, both, "ALARM", null, null, null), REGION);
+        assertEquals(List.of(), names(inAlarm.metricAlarms()));
+        assertEquals(List.of("summary"), names(inAlarm.compositeAlarms()));
+        CloudWatchMetricsService.DescribedAlarms toPager = service.describeAlarms(
+                new CloudWatchMetricsService.AlarmFilter(List.of(), null, both, null, pager.substring(0, 30), null, null),
+                REGION);
+        assertEquals(List.of("paging"), names(toPager.metricAlarms()));
+        assertEquals(List.of("summary"), names(toPager.compositeAlarms()));
+        assertEquals(List.of("idle", "paging"), names(service.describeAlarms(new CloudWatchMetricsService.AlarmFilter(
+                List.of(), null, List.of(), "INSUFFICIENT_DATA", null, null, null), REGION).metricAlarms()));
     }
 
     @Test
@@ -404,7 +436,8 @@ class CompositeAlarmServiceTest {
 
     private CloudWatchMetricsService.DescribedAlarms describe(List<String> names, String prefix, List<String> types,
                                                               String childrenOf, String parentsOf) {
-        return service.describeAlarms(names, prefix, types, childrenOf, parentsOf, REGION);
+        return service.describeAlarms(new CloudWatchMetricsService.AlarmFilter(names, prefix, types, null, null,
+                childrenOf, parentsOf), REGION);
     }
 
     @Test

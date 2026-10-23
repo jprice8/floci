@@ -237,9 +237,11 @@ public class CloudWatchMetricsJsonHandler {
         String prefix = request.has("AlarmNamePrefix") ? request.path("AlarmNamePrefix").asText() : null;
         List<String> alarmTypes = new ArrayList<>();
         request.path("AlarmTypes").forEach(t -> alarmTypes.add(t.asText()));
-        CloudWatchMetricsService.DescribedAlarms described = metricsService.describeAlarms(alarmNames, prefix,
-                alarmTypes, request.path("ChildrenOfAlarmName").asText(null),
-                request.path("ParentsOfAlarmName").asText(null), region);
+        CloudWatchMetricsService.DescribedAlarms described = metricsService.describeAlarms(
+                new CloudWatchMetricsService.AlarmFilter(alarmNames, prefix, alarmTypes,
+                        request.path("StateValue").asText(null), request.path("ActionPrefix").asText(null),
+                        request.path("ChildrenOfAlarmName").asText(null),
+                        request.path("ParentsOfAlarmName").asText(null)), region);
 
         ObjectNode response = objectMapper.createObjectNode();
         ArrayNode compositeArray = response.putArray("CompositeAlarms");

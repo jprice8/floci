@@ -118,6 +118,35 @@ class CompositeAlarmIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
+    void stateValueAndActionPrefixFilterBothKinds(boolean json) {
+        String quiet = unique("quiet");
+        String loud = unique("loud");
+        String watcher = unique("watcher");
+        putMetricAlarm(json, quiet);
+        putMetricAlarm(json, loud);
+        String topic = "arn:aws:sns:us-east-1:000000000000:" + unique("topic");
+        call(json, "PutCompositeAlarm", Map.of("AlarmName", watcher, "AlarmRule", "ALARM(" + loud + ")",
+                "ActionsEnabled", false, "OKActions", List.of(topic))).then().statusCode(200);
+        cleanup.register(() -> call(json, "DeleteAlarms", Map.of("AlarmNames", List.of(watcher))));
+        call(json, "SetAlarmState", Map.of("AlarmName", loud, "StateValue", "ALARM", "StateReason", "test"))
+                .then().statusCode(200);
+
+        List<String> mine = List.of(quiet, loud, watcher);
+        Map<String, Object> inAlarm = Map.of("AlarmNames", mine, "StateValue", "ALARM",
+                "AlarmTypes", List.of("MetricAlarm", "CompositeAlarm"));
+        assertEquals(List.of(loud), describe(json, inAlarm, "MetricAlarms"));
+        assertEquals(List.of(watcher), describe(json, inAlarm, "CompositeAlarms"));
+        Map<String, Object> notifying = Map.of("AlarmNames", mine, "ActionPrefix", topic.substring(0, topic.length() - 3),
+                "AlarmTypes", List.of("MetricAlarm", "CompositeAlarm"));
+        assertEquals(List.of(), describe(json, notifying, "MetricAlarms"));
+        assertEquals(List.of(watcher), describe(json, notifying, "CompositeAlarms"));
+        assertError(json, call(json, "DescribeAlarms", Map.of("ParentsOfAlarmName", loud, "StateValue", "ALARM")),
+                "ChildrenOfAlarmName and ParentsOfAlarmName cannot be combined with each other or with any parameter "
+                        + "except MaxRecords and NextToken.");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
     void invalidRulesAndUnknownChildrenStoreNothing(boolean json) {
         String name = unique("invalid");
         assertError(json, call(json, "PutCompositeAlarm", Map.of("AlarmName", name, "AlarmRule", "TRUE AND")),

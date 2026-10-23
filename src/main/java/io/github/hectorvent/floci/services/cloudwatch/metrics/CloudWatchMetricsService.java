@@ -40,6 +40,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @ApplicationScoped
 public class CloudWatchMetricsService {
@@ -455,31 +456,47 @@ public class CloudWatchMetricsService {
     /** What DescribeAlarms answers: its metric alarms and its composite alarms, either list possibly empty. */
     public record DescribedAlarms(List<MetricAlarm> metricAlarms, List<CompositeAlarm> compositeAlarms) {}
 
+    /** The filters of a DescribeAlarms request, each null or empty when the request leaves it out. */
+    public record AlarmFilter(List<String> alarmNames, String alarmNamePrefix, List<String> alarmTypes,
+                              String stateValue, String actionPrefix, String childrenOf, String parentsOf) {}
+
     /**
-     * DescribeAlarms. Without {@code alarmTypes} it returns metric alarms only, as AWS does.
+     * DescribeAlarms. Without {@code alarmTypes} it returns metric alarms only, as AWS does;
+     * {@code stateValue} and {@code actionPrefix} narrow either kind to alarms in that state, or
+     * with an action of any state starting with that prefix.
      * {@code childrenOf} names a composite alarm and returns the alarms its rule names;
      * {@code parentsOf} names any alarm and returns the composite alarms whose rules name it.
      * Neither returns the alarm it names, even one whose rule names itself. Either one excludes
      * every other filter. Full alarms are returned in both cases, where AWS returns only their
      * names, ARNs and states.
      */
-    public synchronized DescribedAlarms describeAlarms(List<String> alarmNames, String alarmNamePrefix,
-                                                       List<String> alarmTypes, String childrenOf,
-                                                       String parentsOf, String region) {
-        validateAlarmTypes(alarmTypes);
-        if (childrenOf != null || parentsOf != null) {
-            if ((childrenOf != null && parentsOf != null) || !alarmNames.isEmpty() || alarmNamePrefix != null
-                    || !alarmTypes.isEmpty()) {
+    public synchronized DescribedAlarms describeAlarms(AlarmFilter filter, String region) {
+        validateAlarmTypes(filter.alarmTypes());
+        if (filter.childrenOf() != null || filter.parentsOf() != null) {
+            if ((filter.childrenOf() != null && filter.parentsOf() != null) || !filter.alarmNames().isEmpty()
+                    || filter.alarmNamePrefix() != null || !filter.alarmTypes().isEmpty()
+                    || filter.stateValue() != null || filter.actionPrefix() != null) {
                 throw new AwsException("ValidationError", "ChildrenOfAlarmName and ParentsOfAlarmName cannot be "
                         + "combined with each other or with any parameter except MaxRecords and NextToken.", 400);
             }
-            return childrenOf != null ? childrenOf(childrenOf, region) : parentsOf(parentsOf, region);
+            return filter.childrenOf() != null
+                    ? childrenOf(filter.childrenOf(), region) : parentsOf(filter.parentsOf(), region);
         }
-        List<MetricAlarm> metricAlarms = alarmTypes.isEmpty() || alarmTypes.contains("MetricAlarm")
-                ? describeAlarms(alarmNames, alarmNamePrefix, region) : List.of();
-        List<CompositeAlarm> compositeAlarms = alarmTypes.contains("CompositeAlarm")
-                ? describeCompositeAlarms(alarmNames, alarmNamePrefix, region) : List.of();
-        return new DescribedAlarms(metricAlarms, compositeAlarms);
+        List<String> types = filter.alarmTypes();
+        List<MetricAlarm> metricAlarms = types.isEmpty() || types.contains("MetricAlarm")
+                ? describeAlarms(filter.alarmNames(), filter.alarmNamePrefix(), region) : List.of();
+        List<CompositeAlarm> compositeAlarms = types.contains("CompositeAlarm")
+                ? describeCompositeAlarms(filter.alarmNames(), filter.alarmNamePrefix(), region) : List.of();
+        return new DescribedAlarms(
+                metricAlarms.stream().filter(alarm -> matches(alarm, filter)).toList(),
+                compositeAlarms.stream().filter(alarm -> matches(alarm, filter)).toList());
+    }
+
+    private static boolean matches(Alarm alarm, AlarmFilter filter) {
+        String prefix = filter.actionPrefix();
+        return (filter.stateValue() == null || filter.stateValue().equals(alarm.getStateValue()))
+                && (prefix == null || Stream.of(alarm.getAlarmActions(), alarm.getOkActions(),
+                        alarm.getInsufficientDataActions()).flatMap(List::stream).anyMatch(a -> a.startsWith(prefix)));
     }
 
     private DescribedAlarms childrenOf(String name, String region) {
