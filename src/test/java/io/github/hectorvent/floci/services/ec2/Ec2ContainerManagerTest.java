@@ -12,6 +12,7 @@ import com.github.dockerjava.api.command.InspectExecCmd;
 import com.github.dockerjava.api.command.InspectExecResponse;
 import com.github.dockerjava.api.command.ListContainersCmd;
 import com.github.dockerjava.api.command.PingCmd;
+import com.github.dockerjava.api.command.RestartContainerCmd;
 import com.github.dockerjava.api.command.StartContainerCmd;
 import com.github.dockerjava.api.command.StopContainerCmd;
 import com.github.dockerjava.api.exception.DockerException;
@@ -59,6 +60,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -942,6 +944,106 @@ class Ec2ContainerManagerTest {
         verify(harness.logStreamer, timeout(2000)).streamToCloudWatchLogs(
             any(String.class), any(String.class), eq("us-west-2"), eq(TEST_USER_DATA_OUTPUT)
         );
+    }
+
+    @Test
+    void launchRunsThePostStartHookOnceTheContainerRunsAndBeforeUserData() throws Exception {
+        LaunchHarness harness = launchHarness();
+        harness.stubSuccessfulExecs(new CountDownLatch(0), new CountDownLatch(0));
+        InspectContainerCmd inspect = mock(InspectContainerCmd.class);
+        InspectContainerResponse response = inspectResponse("192.168.215.43");
+        when(harness.dockerClient.inspectContainerCmd(TEST_CONTAINER_ID)).thenReturn(inspect);
+        when(inspect.exec()).thenReturn(response);
+        Instance instance = instance("i-poststarthook");
+        instance.setUserData("""
+                #!/bin/bash
+                mkfs.ext4 /dev/sdf
+                """);
+        AtomicReference<String> stateAtHook = new AtomicReference<>();
+        AtomicInteger commandsBeforeHook = new AtomicInteger(-1);
+
+        harness.manager.launch(instance, ResolvedAmiImage.minimal("ubuntu:24.04"), null, "us-west-2",
+                Set.of(), List.of(), Map.of(), () -> {
+                    stateAtHook.set(instance.getState().getName());
+                    commandsBeforeHook.set(harness.executedCommands().size());
+                });
+
+        verify(harness.logStreamer, timeout(2000)).streamToCloudWatchLogs(
+                any(String.class), any(String.class), eq("us-west-2"), eq(TEST_USER_DATA_OUTPUT));
+        assertEquals("running", stateAtHook.get());
+        List<String[]> commands = harness.executedCommands();
+        int userData = -1;
+        for (int i = 0; i < commands.size(); i++) {
+            if (commands.get(i).length == 1 && "/var/lib/user-data.sh".equals(commands.get(i)[0])) {
+                userData = i;
+            }
+        }
+        assertTrue(userData >= 0, "UserData never ran");
+        assertTrue(commandsBeforeHook.get() >= 0 && commandsBeforeHook.get() <= userData,
+                "the hook ran after UserData started");
+    }
+
+    @Test
+    void launchStillRunsUserDataWhenThePostStartHookFails() throws Exception {
+        LaunchHarness harness = launchHarness();
+        harness.stubSuccessfulExecs(new CountDownLatch(0), new CountDownLatch(0));
+        InspectContainerCmd inspect = mock(InspectContainerCmd.class);
+        InspectContainerResponse response = inspectResponse("192.168.215.44");
+        when(harness.dockerClient.inspectContainerCmd(TEST_CONTAINER_ID)).thenReturn(inspect);
+        when(inspect.exec()).thenReturn(response);
+        Instance instance = instance("i-failedhook");
+        instance.setUserData("""
+                #!/bin/bash
+                echo test
+                """);
+
+        harness.manager.launch(instance, ResolvedAmiImage.minimal("ubuntu:24.04"), null, "us-west-2",
+                Set.of(), List.of(), Map.of(), () -> {
+                    throw new IllegalStateException("volume helper unavailable");
+                });
+
+        verify(harness.logStreamer, timeout(2000)).streamToCloudWatchLogs(
+                any(String.class), any(String.class), eq("us-west-2"), eq(TEST_USER_DATA_OUTPUT));
+        assertEquals("running", instance.getState().getName());
+    }
+
+    @Test
+    void rebootRunsThePostRestartHookOnceTheContainerHasRestarted() throws Exception {
+        DockerClient dockerClient = mock(DockerClient.class);
+        RestartContainerCmd restart = mock(RestartContainerCmd.class);
+        when(dockerClient.restartContainerCmd(TEST_CONTAINER_ID)).thenReturn(restart);
+        AtomicBoolean restarted = new AtomicBoolean();
+        when(restart.exec()).thenAnswer(invocation -> {
+            restarted.set(true);
+            return null;
+        });
+        Ec2ContainerManager manager = managerWith(mock(ContainerLifecycleManager.class), dockerClient,
+                mock(Ec2MetadataServer.class));
+        Instance instance = instance("i-rebooted");
+        instance.setDockerContainerId(TEST_CONTAINER_ID);
+        CompletableFuture<Boolean> restartedAtHook = new CompletableFuture<>();
+
+        manager.reboot(instance, () -> restartedAtHook.complete(restarted.get()));
+
+        assertTrue(restartedAtHook.get(5, TimeUnit.SECONDS), "the hook ran before the restart");
+    }
+
+    @Test
+    void aRebootWhoseRestartFailsRunsNoPostRestartHook() throws Exception {
+        DockerClient dockerClient = mock(DockerClient.class);
+        RestartContainerCmd restart = mock(RestartContainerCmd.class);
+        when(dockerClient.restartContainerCmd(TEST_CONTAINER_ID)).thenReturn(restart);
+        when(restart.exec()).thenThrow(new DockerException("No such container", 404));
+        Ec2ContainerManager manager = managerWith(mock(ContainerLifecycleManager.class), dockerClient,
+                mock(Ec2MetadataServer.class));
+        Instance instance = instance("i-reboot-failed");
+        instance.setDockerContainerId(TEST_CONTAINER_ID);
+        CountDownLatch hookRan = new CountDownLatch(1);
+
+        manager.reboot(instance, hookRan::countDown);
+
+        verify(restart, timeout(2000)).exec();
+        assertFalse(hookRan.await(500, TimeUnit.MILLISECONDS), "the hook ran with no container restarted");
     }
 
     @Test

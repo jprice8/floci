@@ -286,8 +286,8 @@ naming different VPCs find nothing.
 | RebootInstances | Reboots instances through the local EC2 service model. |
 | DescribeInstanceStatus | Returns status records for stored instances. |
 | DescribeInstanceCreditSpecifications | Returns the CPU credit option of burstable performance instances. A named instance id reports the option the instance acquired at launch, either the explicit `CreditSpecification.CpuCredits` or the family default, `standard` for t2 and `unlimited` for t3, t3a and t4g. An id that is not a burstable performance instance reports `standard`, and only an unknown id is an error. Naming no id returns the instances on the unlimited option, including one that kept `unlimited` after a resize onto a non-burstable type. `Filter.N` supports the modeled `instance-id` and narrows whichever set the request selected. `MaxResults` accepts 5 through 1000 and cannot be combined with instance ids. `DryRun=true` returns `DryRunOperation`. |
-| DescribeInstanceAttribute | Returns a supported attribute for an instance. |
-| ModifyInstanceAttribute | Updates supported mutable attributes for an instance. `UserData.Value` (base64) needs the instance stopped, as on AWS, and answers `IncorrectInstanceState` otherwise. |
+| DescribeInstanceAttribute | Returns a supported attribute for an instance. `blockDeviceMapping` lists the EBS volumes attached to it as `DescribeInstances` does. |
+| ModifyInstanceAttribute | Updates supported mutable attributes for an instance. `UserData.Value` (base64) needs the instance stopped, as on AWS, and answers `IncorrectInstanceState` otherwise. `BlockDeviceMapping` sets `DeleteOnTermination` on the volume attached at each device it names, `true` when an entry leaves it unset, as AWS documents; a device the instance has no volume at fails with `InvalidInstanceAttributeValue` ("No device is currently mapped at /dev/sda1") and changes nothing. Devices are named as the instance has them; every catalog image is rooted at `/dev/xvda`, Ubuntu and Windows included. As AWS takes one attribute per call, `BlockDeviceMapping` named with another attribute fails with `InvalidParameterCombination` ("Fields for multiple attribute types specified: blockDeviceMapping,groupSet"). |
 | ModifyInstanceMetadataOptions | Updates an instance's IMDS options, changing only the fields the request names. An EKS cluster node is refused with `OperationNotPermitted`. |
 
 ### VPCs
@@ -879,16 +879,67 @@ Within `NetworkInterfaces`, `ConnectionTrackingSpecification` is stored and read
 three of its timeout members.
 
 At launch, `RunInstances` and `CreateFleet` apply the template's `BlockDeviceMappings` under the
-request's, field by field: a request entry for a `DeviceName` the template maps changes only the
-members it sets, and the rest keep the template's values; devices only one side maps apply as
-given. An Auto Scaling group launching from a template gets the template's mappings the same
-way. The root volume's type comes from the mapping for the AMI's root device, else from the
-AMI's own root mapping, else `gp3`, and `CreateImage` records that type on the new AMI's root
-mapping. A mapping with `NoDevice` set removes its device whatever else it names, so it sets no
-type and its `VolumeType` is not checked. A mapping naming a `VolumeType` outside the service model's enum fails with
-`InvalidParameterValue`, as `ModifyVolume` does. Template versions are not checked when they are
-stored, so a template naming an unknown `VolumeType` is accepted by `CreateLaunchTemplate` and
-fails at launch.
+request's, field by field: a request entry for a `DeviceName` the template maps, spelled `xvdf` or
+`/dev/xvdf`, changes only the members it sets, and the rest keep the template's values; devices
+only one side maps apply as given. A request entry that makes the device something else, an EBS
+volume (`Ebs`), an instance store volume (`VirtualName`) or nothing (`NoDevice`), replaces the
+template's choice for it, an `Ebs` block still merging member by member into the template's. An
+Auto Scaling group launching from a template or a launch configuration gets its mappings the same
+way. CloudFormation does not pass them yet: an `AWS::EC2::Instance` launches without the
+`BlockDeviceMappings` it or its launch template declares, and an `AWS::EC2::LaunchTemplate` or
+`AWS::AutoScaling::LaunchConfiguration` stores none, so instances launched from what a stack
+creates get the AMI's devices alone. A mapping naming a `VolumeType` outside the service model's
+enum fails with `InvalidParameterValue`, as `ModifyVolume` does; one with `NoDevice` set creates no
+device, so its `VolumeType` is not checked. Template versions are not checked when they are stored,
+so a template naming an unknown `VolumeType` is accepted by `CreateLaunchTemplate` and fails at
+launch.
+
+The launch's mappings then apply over the AMI's own block device mapping the same way, and the
+launch creates one EBS volume for each device left, attached at that device:
+
+- The instance's root device is the AMI's `RootDeviceName`, which the AMI's entry for it may spell
+  `xvda` or `/dev/xvda`. An AMI that maps no root device gets an 8 GiB root volume. A launch entry
+  for a device the AMI maps applies to it whether it is spelled `xvdf` or `/dev/xvdf`. `NoDevice`
+  keeps any other device the AMI maps from being created, and an entry naming a `VirtualName`, an
+  instance store volume, takes the device over, so neither leaves an EBS volume there. The root
+  is always created: an entry setting either on it leaves the AMI's root as the AMI maps it. An
+  AMI entry with no `Ebs` member, such as an instance store volume, creates nothing.
+- The catalog's images are rooted at `/dev/xvda`, including some AWS publishes with a
+  `/dev/sda1` root, such as Ubuntu and Windows, so on them an entry for `/dev/sda1` adds a data
+  volume rather than resizing the root.
+- A volume from a snapshot takes the snapshot's size unless its entry names a larger one. A smaller
+  size fails with `InvalidBlockDeviceMapping` ("Volume of size 8GB is smaller than snapshot
+  'snap-...', expect size>= 16GB"), and a snapshot that does not exist fails with
+  `InvalidSnapshot.NotFound`. An entry naming neither a size nor a snapshot gets 8 GiB. Snapshots
+  hold no data in Floci, so with a container a volume made from one starts empty and unformatted.
+- The root takes the AMI root's `VolumeType`, else `gp3`; other devices default to `gp2`, as
+  `CreateVolume` does. `Iops` applies only to `gp3`, `io1` and `io2` volumes and `Throughput` only
+  to `gp3`, so a request entry that changes a template device's type does not carry the old type's
+  settings over. A volume is encrypted when its entry or its snapshot says so, or when encryption
+  by default is on.
+- `DeleteOnTermination` defaults to `true` for every device a launch creates, and
+  `ModifyInstanceAttribute` changes it later. When the instance terminates, the volumes whose
+  attachment says `true` are deleted, the root included, unless another instance still has them
+  attached; the rest are detached. That holds as well for an instance that ends `terminated`
+  because its container never started: its volumes are settled the next time an EBS volume call
+  reads them, `DescribeVolumes` or a call naming one of them. A root kept this way holds no data
+  when the instance had a container, whose own file system was the root.
+- An entry without a `DeviceName` fails with `InvalidBlockDeviceMapping` ("Missing device name"),
+  as do a device name `AttachVolume` would refuse ("Invalid device name ...") and a device the
+  request or the template names twice ("/dev/sdh is being assigned to multiple times."), whether or
+  not a launch template is used. `CreateFleet` checks the device names before answering `DryRun`.
+- Nothing of a refused launch is kept: no instance, volume or network interface.
+
+`DescribeInstances` lists every EBS volume attached to the instance in `BlockDeviceMappings`, root
+device first: those its launch created and any attached since, each with its own
+`DeleteOnTermination`; a terminated instance lists none. With a container, the data volumes are
+attached to it before UserData runs. `CreateImage` records the volumes attached to the instance,
+the root included, each with its size, type, encryption, `DeleteOnTermination` and a snapshot of
+its own, under the source AMI's spelling where that AMI maps the device. The source AMI's entries
+that describe no EBS volume, such as instance store volumes, are kept, and an EBS device the
+instance no longer has, one its launch suppressed or a volume since detached, is left out. The
+image is rooted at the instance's root device, and keeps the source AMI's root entry only when the
+instance has no root volume. Volume IOPS and throughput are not recorded.
 
 Both blocks are validated by `CreateLaunchTemplate` and `CreateLaunchTemplateVersion` before
 anything is stored. An `InstanceRequirements` block must carry `VCpuCount` and `MemoryMiB`, each
@@ -1013,7 +1064,7 @@ A standalone ENI created via `CreateNetworkInterface` can also be handed to `Run
 When `floci.services.ec2.volume-block-devices` is enabled (the default), attached EBS volumes are backed by real Linux loop devices inside running instance containers and synthesized EKS cluster node containers:
 - **Storage mechanism**: Backing sparse raw image files are allocated in Floci storage under `floci-aws-ec2-volumes` (named volume or host path). A privileged helper container (`floci-aws-ec2-volume-helper`, running `floci.services.ec2.volume-helper-image`, default `alpine:3.21`) manages Linux loop devices via `losetup`. It starts on the first volume operation and is removed when Floci shuts down; the backing files stay in storage.
 - **Target device nodes**: Inside privileged target instance containers, the corresponding device node is created at the requested path (for example `/dev/xvdf` or `/dev/sdf`) using `mknod` or a symlink to the loop device, matching the exact size specified during volume creation. Target containers can format filesystems (such as ext4 or xfs), mount them, and persist data across detach and reattach.
-- **Restart reconciliation**: When an instance container stops and starts, or when Floci restarts, attached volume device nodes are automatically restored inside the target container. Backing raw files remain preserved across reboots in persistent storage.
+- **Restart reconciliation**: When an instance container stops and starts, restarts for `RebootInstances` or for `CreateImage` without `NoReboot`, or when Floci restarts, attached volume device nodes are automatically restored inside the target container. Backing raw files remain preserved across reboots in persistent storage.
 - **Graceful degradation**: If Docker is unavailable, the target instance container is not running, or the container is not privileged, volume attachments degrade gracefully to metadata-only tracking without failing the API call.
 - **Platform requirements**: Requires a Linux Docker environment (native Linux Docker daemon, or Colima / Docker Desktop with a Linux virtual machine) and privileged instance containers.
 - **Unmodeled aspects**: Multi-attach is tracked at metadata level only. Automated filesystem formatting (volumes start unformatted like real EBS block devices) and volume encryption at the block layer are not modeled. Root volume backing is logical (container rootfs); `ModifyVolume` updates recorded root volume metadata without modifying container storage, while EBS data volume size increases expand the underlying raw backing file and refresh any attached loop device. Volume type, IOPS, and throughput changes remain recorded metadata without altering device characteristics.

@@ -823,8 +823,13 @@ public class Ec2QueryHandler {
             if (marketType == null && launchTemplateData.getInstanceMarketOptions() != null) {
                 marketType = launchTemplateData.getInstanceMarketOptions().getMarketType();
             }
+            // Checked on each side before the merge, which would fold a device named twice into one;
+            // a request entry spelling a template device differently ("xvdf") then merges into it.
+            Ec2Service.requireValidLaunchDevices(launchTemplateData.getBlockDeviceMappings());
+            Ec2Service.requireValidLaunchDevices(blockDeviceMappings);
             blockDeviceMappings = LaunchTemplateData.BlockDeviceMapping.merge(
-                    launchTemplateData.getBlockDeviceMappings(), blockDeviceMappings);
+                    launchTemplateData.getBlockDeviceMappings(),
+                    Ec2Service.spelledAs(launchTemplateData.getBlockDeviceMappings(), blockDeviceMappings));
             if (!suppliedInterfaces) {
                 // With neither request interfaces nor, after the checks above, a request SubnetId
                 // or PrivateIpAddress, the template's primary interface places the launch.
@@ -1013,6 +1018,7 @@ public class Ec2QueryHandler {
             }
             // The template stored them unchecked; the launch would refuse them, so the dry run does.
             Ec2Service.validateMetadataOptions(launch.metadataOptions());
+            Ec2Service.requireValidLaunchDevices(launch.blockDeviceMappings());
         }
         checkDryRun(p);
 
@@ -1559,6 +1565,8 @@ public class Ec2QueryHandler {
             xml.start("disableApiStop").elem("value", String.valueOf(inst.isDisableApiStop())).end("disableApiStop");
         } else if ("disableApiTermination".equals(attribute)) {
             xml.start("disableApiTermination").elem("value", String.valueOf(inst.isDisableApiTermination())).end("disableApiTermination");
+        } else if ("blockDeviceMapping".equals(attribute)) {
+            instanceBlockDeviceMappingXml(xml, inst);
         } else if ("groupSet".equals(attribute)) {
             xml.start("groupSet");
             for (GroupIdentifier gi : inst.getSecurityGroups()) {
@@ -1573,8 +1581,52 @@ public class Ec2QueryHandler {
         return xmlResponse(xml.build());
     }
 
+    /**
+     * The ModifyInstanceAttribute members that each name an attribute, as a parameter or a
+     * parameter prefix, with the attribute name AWS reports each under, in the order of the API's
+     * Attribute values.
+     */
+    private static final List<Map.Entry<String, String>> INSTANCE_ATTRIBUTE_MEMBERS = List.of(
+            Map.entry("DisableApiTermination.Value", "disableApiTermination"),
+            Map.entry("InstanceType.Value", "instanceType"),
+            Map.entry("Kernel.Value", "kernel"),
+            Map.entry("Ramdisk.Value", "ramdisk"),
+            Map.entry("InstanceInitiatedShutdownBehavior.Value", "instanceInitiatedShutdownBehavior"),
+            Map.entry("BlockDeviceMapping.", "blockDeviceMapping"),
+            Map.entry("UserData.Value", "userData"),
+            Map.entry("SourceDestCheck.Value", "sourceDestCheck"),
+            Map.entry("GroupId.", "groupSet"),
+            Map.entry("EbsOptimized.Value", "ebsOptimized"),
+            Map.entry("SriovNetSupport.Value", "sriovNetSupport"),
+            Map.entry("EnaSupport.Value", "enaSupport"),
+            Map.entry("DisableApiStop.Value", "disableApiStop"),
+            Map.entry("EnclaveOptions.", "enclaveOptions"));
+
     private Response handleModifyInstanceAttribute(MultivaluedMap<String, String> p, String region) {
         String instanceId = p.getFirst("InstanceId");
+        List<LaunchTemplateData.BlockDeviceMapping> blockDeviceMappings = parseLaunchTemplateBlockDeviceMappings(p, "");
+        if (!blockDeviceMappings.isEmpty()) {
+            // AWS takes one attribute per call. Refusing the others named with the devices keeps a
+            // call from changing some of what it names and then failing on the rest.
+            // The generic form names its attribute in Attribute and sets it through Value.
+            String generic = p.getFirst("Attribute");
+            List<String> named = new ArrayList<>();
+            for (Map.Entry<String, String> attribute : INSTANCE_ATTRIBUTE_MEMBERS) {
+                if (attribute.getValue().equals(generic) || (attribute.getKey().endsWith(".")
+                        ? anyParamStartsWith(p, attribute.getKey()) : p.getFirst(attribute.getKey()) != null)) {
+                    named.add(attribute.getValue());
+                }
+            }
+            if (generic != null && !generic.isBlank() && !named.contains(generic)) {
+                named.add(generic);
+            }
+            if (named.size() > 1) {
+                throw new AwsException("InvalidParameterCombination",
+                        "Fields for multiple attribute types specified: " + String.join(",", named), 400);
+            }
+            service.modifyInstanceBlockDeviceMappings(region, instanceId, blockDeviceMappings);
+            return booleanResponse("ModifyInstanceAttribute");
+        }
         // UserData arrives base64-encoded, as on RunInstances; both forms are kept so the attribute
         // describes back exactly as sent.
         String userDataEncoded = p.getFirst("UserData.Value");
@@ -5092,19 +5144,7 @@ public class Ec2QueryHandler {
         if (capacityReservationId != null) {
             xml.elem("capacityReservationId", capacityReservationId);
         }
-        if (inst.getRootVolumeId() != null) {
-            xml.start("blockDeviceMapping")
-                    .start("item")
-                    .elem("deviceName", inst.getRootDeviceName())
-                    .start("ebs")
-                    .elem("volumeId", inst.getRootVolumeId())
-                    .elem("status", "attached")
-                    .elem("deleteOnTermination", "true")
-                    .elem("attachTime", inst.getLaunchTime() != null ? ISO_FMT.format(inst.getLaunchTime()) : "")
-                    .end("ebs")
-                    .end("item")
-                    .end("blockDeviceMapping");
-        }
+        instanceBlockDeviceMappingXml(xml, inst);
         if (inst.getIamInstanceProfileArn() != null) {
             xml.start("iamInstanceProfile")
                     .elem("arn", inst.getIamInstanceProfileArn())
@@ -5113,6 +5153,24 @@ public class Ec2QueryHandler {
         }
         xml.raw(tagSetXml(inst.getTags()));
         return xml.build();
+    }
+
+    /** An instance's {@code blockDeviceMapping}: the EBS volumes attached to it, root device first. */
+    private void instanceBlockDeviceMappingXml(XmlBuilder xml, Instance inst) {
+        xml.start("blockDeviceMapping");
+        for (VolumeAttachment attachment : service.instanceVolumeAttachments(inst)) {
+            xml.start("item")
+                    .elem("deviceName", attachment.getDevice())
+                    .start("ebs")
+                    .elem("volumeId", attachment.getVolumeId())
+                    .elem("status", attachment.getState())
+                    .elem("deleteOnTermination", String.valueOf(attachment.isDeleteOnTermination()));
+            if (attachment.getAttachTime() != null) {
+                xml.elem("attachTime", ISO_FMT.format(attachment.getAttachTime()));
+            }
+            xml.end("ebs").end("item");
+        }
+        xml.end("blockDeviceMapping");
     }
 
     private String resolveIamInstanceProfileArn(MultivaluedMap<String, String> p) {

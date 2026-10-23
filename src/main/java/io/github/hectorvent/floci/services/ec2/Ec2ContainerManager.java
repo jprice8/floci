@@ -418,6 +418,17 @@ public class Ec2ContainerManager {
     public void launch(Instance instance, ResolvedAmiImage image, String publicKey, String region,
                        Set<Integer> appPorts, List<SecurityGroup> groups,
                        Map<String, List<String>> prefixLists) {
+        launch(instance, image, publicKey, region, appPorts, groups, prefixLists, null);
+    }
+
+    /**
+     * @param postStart run once the container is running and before the rest of guest setup,
+     *                  UserData included, or null. A failure in it is logged and does not fail the
+     *                  launch.
+     */
+    public void launch(Instance instance, ResolvedAmiImage image, String publicKey, String region,
+                       Set<Integer> appPorts, List<SecurityGroup> groups,
+                       Map<String, List<String>> prefixLists, Runnable postStart) {
         instance.setState(InstanceState.pending());
 
         // An instance record is metadata: id, addresses, tags and lifecycle state are all
@@ -528,6 +539,13 @@ public class Ec2ContainerManager {
                 if (!markRunning(instance)) {
                     failLaunch(instance, leasedPrivateIp);
                     return;
+                }
+                if (postStart != null) {
+                    try {
+                        postStart.run();
+                    } catch (Exception e) {
+                        LOG.warnv("Error in post-start hook for instance {0}: {1}", instanceId, e.getMessage());
+                    }
                 }
 
                 // Set public-facing addresses only for instances due one, by the rule mock instances
@@ -1406,9 +1424,10 @@ public class Ec2ContainerManager {
     }
 
     /**
-     * Reboots an instance via docker restart.
+     * Reboots an instance via docker restart, executing postRestart once the container is back.
+     * The restarted container has a fresh /dev, without the device nodes made for it before.
      */
-    public void reboot(Instance instance) {
+    public void reboot(Instance instance, Runnable postRestart) {
         String containerId = instance.getDockerContainerId();
         if (containerId == null) {
             return;
@@ -1419,6 +1438,15 @@ public class Ec2ContainerManager {
                 LOG.infov("Rebooted EC2 container {0}", containerId);
             } catch (Exception e) {
                 LOG.warnv("Error rebooting EC2 container {0}: {1}", containerId, e.getMessage());
+                return;
+            }
+            if (postRestart != null) {
+                try {
+                    postRestart.run();
+                } catch (Exception e) {
+                    LOG.warnv("Error in post-restart hook for instance {0}: {1}",
+                            instance.getInstanceId(), e.getMessage());
+                }
             }
         });
     }
