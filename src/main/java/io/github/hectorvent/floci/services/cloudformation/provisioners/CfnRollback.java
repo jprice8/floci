@@ -324,7 +324,9 @@ public final class CfnRollback {
      * deleted again by {@code undoCreate}, a reused one is put back by {@code undoInPlace}, which
      * restores the provisioner's snapshot and is a no-op when there is none. The engine only removes
      * a failed create it can see, and on a failed update it restores the previous resource metadata
-     * and discards the attempted one, snapshot included, so the undo has to happen here.
+     * and discards the attempted one, snapshot included, so the undo has to happen here. A
+     * provisioner whose snapshot a ContinueUpdateRollback still needs after an undo that failed
+     * carries it in {@link CfnResourceProvisioner#mergeFailedUpdateResourceTracking}.
      *
      * <p>A compensation that fails is reported, never hidden. A created entity carries
      * {@link #ROLLBACK_OWNED_ATTR} while the steps run, so the engine's create rollback deletes it
