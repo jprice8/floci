@@ -391,6 +391,17 @@ class CompositeAlarmServiceTest {
         }
     }
 
+    @Test
+    void theNamedAlarmIsNeitherItsOwnChildNorItsOwnParent() {
+        metric("m");
+        composite("self", "ALARM(m)");
+        composite("self", "ALARM(self) OR ALARM(m)");
+        assertEquals(List.of("m"), names(describe(List.of(), null, List.of(), "self", null).metricAlarms()));
+        assertEquals(List.of(), names(describe(List.of(), null, List.of(), "self", null).compositeAlarms()));
+        assertEquals(List.of(), names(describe(List.of(), null, List.of(), null, "self").compositeAlarms()));
+        assertEquals(List.of("self"), names(describe(List.of(), null, List.of(), null, "m").compositeAlarms()));
+    }
+
     private CloudWatchMetricsService.DescribedAlarms describe(List<String> names, String prefix, List<String> types,
                                                               String childrenOf, String parentsOf) {
         return service.describeAlarms(names, prefix, types, childrenOf, parentsOf, REGION);

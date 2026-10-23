@@ -459,8 +459,9 @@ public class CloudWatchMetricsService {
      * DescribeAlarms. Without {@code alarmTypes} it returns metric alarms only, as AWS does.
      * {@code childrenOf} names a composite alarm and returns the alarms its rule names;
      * {@code parentsOf} names any alarm and returns the composite alarms whose rules name it.
-     * Either one excludes every other filter. Full alarms are returned in both cases, where AWS
-     * returns only their names, ARNs and states.
+     * Neither returns the alarm it names, even one whose rule names itself. Either one excludes
+     * every other filter. Full alarms are returned in both cases, where AWS returns only their
+     * names, ARNs and states.
      */
     public synchronized DescribedAlarms describeAlarms(List<String> alarmNames, String alarmNamePrefix,
                                                        List<String> alarmTypes, String childrenOf,
@@ -483,11 +484,12 @@ public class CloudWatchMetricsService {
 
     private DescribedAlarms childrenOf(String name, String region) {
         AlarmIndex alarms = alarmIndex(region);
-        CompositeAlarmRule rule = alarms.byName().get(name) instanceof CompositeAlarm composite
-                ? parseStored(composite) : null;
+        Alarm named = alarms.byName().get(name);
+        CompositeAlarmRule rule = named instanceof CompositeAlarm composite ? parseStored(composite) : null;
         Set<Alarm> children = new LinkedHashSet<>();
         if (rule != null) {
             rule.references().stream().map(alarms::resolve).filter(Objects::nonNull).forEach(children::add);
+            children.remove(named);
         }
         return new DescribedAlarms(
                 children.stream().filter(MetricAlarm.class::isInstance).map(MetricAlarm.class::cast).toList(),
@@ -500,7 +502,7 @@ public class CloudWatchMetricsService {
         List<CompositeAlarm> parents = new ArrayList<>();
         if (child != null) {
             for (CompositeAlarm composite : alarms.composites()) {
-                CompositeAlarmRule rule = parseStored(composite);
+                CompositeAlarmRule rule = composite == child ? null : parseStored(composite);
                 if (rule != null && rule.references().stream().anyMatch(reference -> alarms.resolve(reference) == child)) {
                     parents.add(composite);
                 }
