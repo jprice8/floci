@@ -11,7 +11,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -307,6 +309,26 @@ class CloudWatchMetricsServiceTest {
         assertEquals("Threshold breached", after.getStateReason());
         assertEquals("{\"version\":\"1.0\"}", after.getStateReasonData());
         assertEquals(before.getStateUpdatedTimestamp(), after.getStateUpdatedTimestamp());
+    }
+
+    @Test
+    void anUpdateIgnoresTagsAndKeepsTheOnesTheAlarmHas() {
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("tagged");
+        alarm.setTags(new LinkedHashMap<>(Map.of("team", "ops")));
+        service.putMetricAlarm(alarm, REGION);
+        service.tagResource(alarm.getAlarmArn(), Map.of("env", "prod"), REGION);
+
+        MetricAlarm withTags = new MetricAlarm();
+        withTags.setAlarmName("tagged");
+        withTags.setTags(new LinkedHashMap<>(Map.of("ignored", "on update")));
+        service.putMetricAlarm(withTags, REGION);
+        assertEquals(Map.of("team", "ops", "env", "prod"), service.listTagsForResource(alarm.getAlarmArn(), REGION));
+
+        MetricAlarm withoutTags = new MetricAlarm();
+        withoutTags.setAlarmName("tagged");
+        service.putMetricAlarm(withoutTags, REGION);
+        assertEquals(Map.of("team", "ops", "env", "prod"), service.listTagsForResource(alarm.getAlarmArn(), REGION));
     }
 
     @Test

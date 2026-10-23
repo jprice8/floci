@@ -397,6 +397,10 @@ HTTP 404 `UnknownOperationException`. IAM policies use the `cloudwatch` action p
 | `UntagResource` | Remove tags from an alarm or dashboard |
 | `ListTagsForResource` | List the tags of an alarm or dashboard |
 
+`PutMetricAlarm` on an existing alarm replaces its definition but keeps its state and tags, as
+on AWS (`Tags` apply on create only). The evaluator then moves a single-metric alarm's state if
+the new definition disagrees.
+
 Metric streams are stored as definitions with their `running` or `stopped` state. Floci never
 delivers metrics to the Firehose delivery stream a metric stream names.
 
@@ -449,8 +453,7 @@ both JSON and Query protocols. Expressions, labels, `ReturnData`, account IDs, q
 and nested metric statistics (including dimensions and units) survive storage reloads.
 Metric-math alarm responses omit the single-metric fields, including top-level `Period`.
 Updating an alarm replaces its metric definition, so changing between `Metrics` and a single
-metric does not retain the previous definition. As on AWS, the update keeps the alarm's state;
-the next evaluation moves it if the new definition disagrees.
+metric does not retain the previous definition.
 
 This is management-plane support: the alarm evaluator currently evaluates only single-metric
 alarms, not metric-math expressions. `SetAlarmState` remains available for manual transitions.

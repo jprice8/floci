@@ -345,8 +345,9 @@ public class CloudWatchMetricsService {
     }
 
     /**
-     * Creates or replaces a metric alarm. An update keeps the alarm's state, as AWS does: the
-     * definition changes, and the next evaluation moves the state if the new one disagrees.
+     * Creates or replaces a metric alarm. An update keeps the alarm's state and tags, as AWS does:
+     * the definition changes, the next evaluation moves the state if the new one disagrees, and
+     * {@code Tags} apply on create only.
      */
     public synchronized void putMetricAlarm(MetricAlarm alarm, String region) {
         String key = region + "::" + alarm.getAlarmName();
@@ -361,6 +362,7 @@ public class CloudWatchMetricsService {
             alarm.setStateReasonData(previous.getStateReasonData());
             alarm.setStateUpdatedTimestamp(previous.getStateUpdatedTimestamp());
             alarm.setStateTransitionedTimestamp(previous.getStateTransitionedTimestamp());
+            alarm.setTags(previous.getTags());
         } else if (alarm.getStateTransitionedTimestamp() == 0) {
             alarm.setStateTransitionedTimestamp(alarm.getStateUpdatedTimestamp());
         }
