@@ -435,8 +435,10 @@ that fit in its documented 4000 characters. A state set with `SetAlarmState` hol
 changes state. Alarms on a cycle of composite alarms are not evaluated.
 
 `DescribeAlarms` returns composite alarms only when `AlarmTypes` includes `CompositeAlarm`.
-`StateValue` and `ActionPrefix` narrow both kinds, the latter to alarms with an action of any
-state starting with the prefix.
+`StateValue` and `ActionPrefix` narrow both kinds. Floci matches `ActionPrefix` against alarm,
+OK and insufficient-data actions alike, since AWS does not say which it reads. `DescribeAlarms`
+and `SetAlarmState` refuse a `StateValue` other than `OK`, `ALARM` or `INSUFFICIENT_DATA` with
+AWS's `ValidationError`.
 `ChildrenOfAlarmName` returns the alarms a composite alarm's rule names, and `ParentsOfAlarmName`
 the composite alarms whose rules name an alarm; either excludes every other filter. Both return
 full alarms, where AWS returns only names, ARNs and states.

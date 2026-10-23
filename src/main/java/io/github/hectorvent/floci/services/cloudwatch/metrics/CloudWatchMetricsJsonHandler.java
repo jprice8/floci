@@ -347,7 +347,7 @@ public class CloudWatchMetricsJsonHandler {
 
     private Response handleSetAlarmState(JsonNode request, String region) {
         String name = request.path("AlarmName").asText();
-        String state = request.path("StateValue").asText();
+        String state = request.path("StateValue").asText(null);
         String reason = request.path("StateReason").asText(null);
         String reasonData = request.path("StateReasonData").asText(null);
         metricsService.setAlarmState(name, state, reason, reasonData, region);

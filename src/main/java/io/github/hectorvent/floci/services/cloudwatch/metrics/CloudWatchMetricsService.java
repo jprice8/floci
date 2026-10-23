@@ -51,6 +51,8 @@ public class CloudWatchMetricsService {
     /** The length AWS documents as the most an alarm's StateReasonData can hold. */
     private static final int MAX_STATE_REASON_DATA = 4000;
     private static final Set<String> ALARM_TYPES = Set.of("CompositeAlarm", "LogAlarm", "MetricAlarm");
+    /** The StateValue enum, in the order AWS lists it when it refuses another value. */
+    private static final List<String> STATE_VALUES = List.of("INSUFFICIENT_DATA", "ALARM", "OK");
     /** "Friday 04 August, 2023 12:54:46 UTC", as in a composite alarm's StateReason. */
     private static final DateTimeFormatter REASON_TIME = DateTimeFormatter
             .ofPattern("EEEE dd MMMM, yyyy HH:mm:ss 'UTC'", Locale.ENGLISH).withZone(ZoneOffset.UTC);
@@ -472,6 +474,7 @@ public class CloudWatchMetricsService {
      */
     public synchronized DescribedAlarms describeAlarms(AlarmFilter filter, String region) {
         validateAlarmTypes(filter.alarmTypes());
+        validateStateValue(filter.stateValue());
         if (filter.childrenOf() != null || filter.parentsOf() != null) {
             if ((filter.childrenOf() != null && filter.parentsOf() != null) || !filter.alarmNames().isEmpty()
                     || filter.alarmNamePrefix() != null || !filter.alarmTypes().isEmpty()
@@ -548,6 +551,15 @@ public class CloudWatchMetricsService {
         return all;
     }
 
+    /** Rejects a state outside the API's enum in AWS's words; {@code null} means absent, which callers decide on. */
+    private static void validateStateValue(String stateValue) {
+        if (stateValue != null && !STATE_VALUES.contains(stateValue)) {
+            throw new AwsException("ValidationError", "1 validation error detected: Value '" + stateValue
+                    + "' at 'stateValue' failed to satisfy constraint: Member must satisfy enum value set: "
+                    + STATE_VALUES, 400);
+        }
+    }
+
     /** Rejects a {@code DescribeAlarms} {@code AlarmTypes} value the API does not define. */
     private static void validateAlarmTypes(List<String> alarmTypes) {
         for (String type : alarmTypes) {
@@ -594,6 +606,11 @@ public class CloudWatchMetricsService {
     }
 
     public void setAlarmState(String alarmName, String stateValue, String stateReason, String stateReasonData, String region) {
+        if (stateValue == null) {
+            throw new AwsException("ValidationError", "1 validation error detected: Value null at 'stateValue' "
+                    + "failed to satisfy constraint: Member must not be null", 400);
+        }
+        validateStateValue(stateValue);
         List<AlarmSnsNotifier.Notification> notifications = new ArrayList<>();
         synchronized (this) {
             String key = region + "::" + alarmName;

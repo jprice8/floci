@@ -348,6 +348,26 @@ class CloudWatchMetricsServiceTest {
         assertEquals(stored.getStateUpdatedTimestamp(), stored.getStateTransitionedTimestamp());
     }
 
+    /** AWS's answer to SetAlarmState with StateValue INVALID, recorded over Query, JSON and CBOR. */
+    @Test
+    void setAlarmStateRejectsAStateOutsideTheEnumBeforeLookingTheAlarmUp() {
+        String message = "1 validation error detected: Value 'INVALID' at 'stateValue' failed to satisfy "
+                + "constraint: Member must satisfy enum value set: [INSUFFICIENT_DATA, ALARM, OK]";
+        AwsException missing = assertThrows(AwsException.class,
+                () -> service.setAlarmState("no-such-alarm", "INVALID", "test", null, REGION));
+        assertEquals("ValidationError", missing.getErrorCode());
+        assertEquals(400, missing.getHttpStatus());
+        assertEquals(message, missing.getMessage());
+
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("kept-state");
+        service.putMetricAlarm(alarm, REGION);
+        assertEquals(message, assertThrows(AwsException.class,
+                () -> service.setAlarmState("kept-state", "INVALID", "test", null, REGION)).getMessage());
+        assertEquals("INSUFFICIENT_DATA",
+                service.describeAlarms(List.of("kept-state"), null, REGION).getFirst().getStateValue());
+    }
+
     @Test
     void setAlarmStateOnNonexistentAlarmThrowsResourceNotFound() {
         AwsException ex = assertThrows(AwsException.class,

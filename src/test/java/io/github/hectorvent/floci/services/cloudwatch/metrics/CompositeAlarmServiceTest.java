@@ -362,6 +362,10 @@ class CompositeAlarmServiceTest {
         assertEquals(List.of(), logAlarms.metricAlarms());
         assertEquals(List.of(), logAlarms.compositeAlarms());
         assertThrows(AwsException.class, () -> describe(List.of(), null, List.of("Composite"), null, null));
+        assertRejected("1 validation error detected: Value 'alarm' at 'stateValue' failed to satisfy constraint: "
+                + "Member must satisfy enum value set: [INSUFFICIENT_DATA, ALARM, OK]",
+                () -> service.describeAlarms(new CloudWatchMetricsService.AlarmFilter(List.of(), null, List.of(),
+                        "alarm", null, null, null), REGION));
     }
 
     @Test
