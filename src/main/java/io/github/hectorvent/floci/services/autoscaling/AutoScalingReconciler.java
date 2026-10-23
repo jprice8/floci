@@ -549,7 +549,7 @@ public class AutoScalingReconciler {
                 reservation = ec2Service.runInstances(
                         asg.getRegion(), launchSource.imageId(), launchSource.instanceType(), 1, 1,
                         launchSource.keyName(), launchSource.securityGroupIds(), placement.subnetId(), clientToken,
-                        propagatedInstanceTags(asg, launchSource), launchSource.userData(),
+                        AutoScalingService.propagatedInstanceTags(asg, launchSource.instanceTags()), launchSource.userData(),
                         launchSource.launchConfigurationName() == null ? launchSource.iamInstanceProfile()
                                 : asgService.resolveLaunchConfigurationProfile(launchSource.iamInstanceProfile()),
                         launchSource.associatePublicIpAddress(), null, 0, null, launchSource.metadataOptions(), null,
@@ -659,23 +659,6 @@ public class AutoScalingReconciler {
 
     private record LaunchPlacement(String subnetId, String availabilityZone, int availableIpAddresses,
                                    boolean requiresIpv4Address) {}
-
-    private static List<io.github.hectorvent.floci.services.ec2.model.Tag> propagatedInstanceTags(
-            AutoScalingGroup asg,
-            LaunchSource launchSource) {
-        Map<String, String> tags = new LinkedHashMap<>();
-        for (io.github.hectorvent.floci.services.ec2.model.Tag tag : launchSource.instanceTags()) {
-            tags.put(tag.getKey(), tag.getValue());
-        }
-        asg.getTags().forEach((key, value) -> {
-            if (asg.getTagPropagateAtLaunch().getOrDefault(key, false)) {
-                tags.put(key, value);
-            }
-        });
-        return tags.entrySet().stream()
-                .map(entry -> new io.github.hectorvent.floci.services.ec2.model.Tag(entry.getKey(), entry.getValue()))
-                .toList();
-    }
 
     private void scaleIn(AutoScalingGroup asg, int count) {
         List<AsgInstance> candidates = asg.getInstances().stream()

@@ -72,11 +72,23 @@ EC2 instance can use a default subnet in a different zone.
 | `SetInstanceHealth` | Updates an instance's health status immediately; accepts but does not enforce the grace-period flag |
 | `SetInstanceProtection` | Enables or disables scale-in protection for named instances in a group |
 | `SetDesiredCapacity` | Updates desired count; reconciler handles scale-out / scale-in within 10 s |
-| `AttachInstances` | Attaches existing EC2 instances to a group; sets lifecycle state to `InService` |
+| `AttachInstances` | Attaches existing EC2 instances to a group; sets lifecycle state to `InService`. Refuses the whole batch with `ValidationError` when an instance already belongs to a group |
 | `DetachInstances` | Detaches instances from a group; optionally decrements desired capacity |
 | `TerminateInstanceInAutoScalingGroup` | Terminates a specific instance; optionally decrements desired capacity |
 | `SuspendProcesses` | Records suspended scaling processes (empty list suspends all); reported back by `DescribeAutoScalingGroups` |
 | `ResumeProcesses` | Clears suspended processes (empty list resumes all) |
+
+Member instances carry the tags the
+[EC2 instance tagging lifecycle](https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-tagging.html#tag-lifecycle)
+describes. An instance the group launches gets its launch template's instance tags, then the
+group's `PropagateAtLaunch` tags, which win a key both set, then `aws:autoscaling:groupName` with
+the group's name. `AttachInstances` adds the same group tags and `aws:autoscaling:groupName`,
+overwriting existing tags with the same keys. `DetachInstances` removes only
+`aws:autoscaling:groupName`, and only while it names the group being detached from.
+
+`AttachInstances` does not yet refuse what AWS refuses for the instance's state or zone or for
+the group's `MaxSize`, and does not grow desired capacity by the number of instances attached.
+An ID EC2 has no instance for joins the group without tags.
 
 ### Instance Refresh
 

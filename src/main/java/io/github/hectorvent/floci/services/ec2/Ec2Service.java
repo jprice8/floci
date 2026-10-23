@@ -9544,6 +9544,15 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
     public void deleteTags(String region, List<String> resourceIds, List<Tag> tagList) {
         validateTagTargets(region, resourceIds);
         validateUserTagKeys(tagList);
+        deleteResourceTags(region, resourceIds, tagList);
+    }
+
+    /** Service-owned tag cleanup, separate from the public EC2 DeleteTags operation. */
+    public void deleteSystemTag(String region, List<String> resourceIds, String tagKey, String tagValue) {
+        deleteResourceTags(region, resourceIds, List.of(new Tag(tagKey, tagValue)));
+    }
+
+    private void deleteResourceTags(String region, List<String> resourceIds, List<Tag> tagList) {
         ensureDefaultResources(region);
         for (String resourceId : resourceIds) {
             withTopologyLockIfNeeded(region, resourceId, () -> {

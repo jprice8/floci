@@ -196,6 +196,27 @@ class Ec2ServiceTest {
         assertEquals(List.of(membership), instance.getTags());
     }
 
+    @Test
+    void deleteSystemTagRemovesTheTagOnlyWhenItsValueMatches() {
+        Ec2Service service = new Ec2Service(mockConfig(true), mock(Ec2ContainerManager.class),
+                mock(Ec2PortForwardManager.class), mock(AmiImageResolver.class), mock(Ec2ImageCatalog.class),
+                new Ec2InstanceTypeCatalog(), new InMemoryStorageFactory());
+        Tag membership = new Tag("aws:autoscaling:groupName", "group-a");
+        Tag userTag = new Tag("env", "test");
+        List<String> ids = List.of(service.runInstances("us-east-1", "ami-test", "t3.micro",
+                        1, 1, null, List.of(), null, null, List.of(membership, userTag), null, null)
+                .getInstances().getFirst().getInstanceId());
+
+        service.deleteSystemTag("us-east-1", ids, membership.getKey(), "group-b");
+        assertEquals(List.of(membership, userTag), service.describeInstances("us-east-1", ids, Map.of())
+                .getFirst().getInstances().getFirst().getTags());
+
+        service.deleteSystemTag("us-east-1", ids, membership.getKey(), "group-a");
+        assertEquals(List.of(userTag), service.describeInstances("us-east-1", ids, Map.of())
+                .getFirst().getInstances().getFirst().getTags());
+        assertEquals(List.of(userTag), service.resourceTags("us-east-1", ids.getFirst()));
+    }
+
 
     @Test
     void subnetAvailableAddressesTrackAllocationsAndRelease() {
