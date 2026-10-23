@@ -11,7 +11,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -283,6 +285,87 @@ class CloudWatchMetricsServiceTest {
         MetricAlarm updated = service.describeAlarms(List.of("my-alarm"), null, REGION).getFirst();
         assertEquals("ALARM", updated.getStateValue());
         assertEquals("Threshold breached", updated.getStateReason());
+    }
+
+    @Test
+    void anUpdateReplacesTheDefinitionButKeepsTheAlarmState() {
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("redefined");
+        alarm.setThreshold(10);
+        service.putMetricAlarm(alarm, REGION);
+        service.setAlarmState("redefined", "ALARM", "Threshold breached", "{\"version\":\"1.0\"}", REGION);
+        MetricAlarm before = service.describeAlarms(List.of("redefined"), null, REGION).getFirst();
+
+        MetricAlarm update = new MetricAlarm();
+        update.setAlarmName("redefined");
+        update.setThreshold(20);
+        update.setAlarmDescription("raised");
+        service.putMetricAlarm(update, REGION);
+
+        MetricAlarm after = service.describeAlarms(List.of("redefined"), null, REGION).getFirst();
+        assertEquals(20, after.getThreshold());
+        assertEquals("raised", after.getAlarmDescription());
+        assertEquals("ALARM", after.getStateValue());
+        assertEquals("Threshold breached", after.getStateReason());
+        assertEquals("{\"version\":\"1.0\"}", after.getStateReasonData());
+        assertEquals(before.getStateUpdatedTimestamp(), after.getStateUpdatedTimestamp());
+    }
+
+    @Test
+    void anUpdateIgnoresTagsAndKeepsTheOnesTheAlarmHas() {
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("tagged");
+        alarm.setTags(new LinkedHashMap<>(Map.of("team", "ops")));
+        service.putMetricAlarm(alarm, REGION);
+        service.tagResource(alarm.getAlarmArn(), Map.of("env", "prod"), REGION);
+
+        MetricAlarm withTags = new MetricAlarm();
+        withTags.setAlarmName("tagged");
+        withTags.setTags(new LinkedHashMap<>(Map.of("ignored", "on update")));
+        service.putMetricAlarm(withTags, REGION);
+        assertEquals(Map.of("team", "ops", "env", "prod"), service.listTagsForResource(alarm.getAlarmArn(), REGION));
+
+        MetricAlarm withoutTags = new MetricAlarm();
+        withoutTags.setAlarmName("tagged");
+        service.putMetricAlarm(withoutTags, REGION);
+        assertEquals(Map.of("team", "ops", "env", "prod"), service.listTagsForResource(alarm.getAlarmArn(), REGION));
+    }
+
+    @Test
+    void stateTransitionedTimestampMovesOnlyWhenTheStateValueChanges() {
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("transitions");
+        alarm.setStateUpdatedTimestamp(1_000);
+        service.putMetricAlarm(alarm, REGION);
+
+        service.setAlarmState("transitions", "INSUFFICIENT_DATA", "same state", null, REGION);
+        MetricAlarm stored = service.describeAlarms(List.of("transitions"), null, REGION).getFirst();
+        assertTrue(stored.getStateUpdatedTimestamp() > 1_000);
+        assertEquals(1_000, stored.getStateTransitionedTimestamp());
+
+        service.setAlarmState("transitions", "ALARM", "breached", null, REGION);
+        stored = service.describeAlarms(List.of("transitions"), null, REGION).getFirst();
+        assertEquals(stored.getStateUpdatedTimestamp(), stored.getStateTransitionedTimestamp());
+    }
+
+    /** AWS's answer to SetAlarmState with StateValue INVALID, recorded over Query, JSON and CBOR. */
+    @Test
+    void setAlarmStateRejectsAStateOutsideTheEnumBeforeLookingTheAlarmUp() {
+        String message = "1 validation error detected: Value 'INVALID' at 'stateValue' failed to satisfy "
+                + "constraint: Member must satisfy enum value set: [INSUFFICIENT_DATA, ALARM, OK]";
+        AwsException missing = assertThrows(AwsException.class,
+                () -> service.setAlarmState("no-such-alarm", "INVALID", "test", null, REGION));
+        assertEquals("ValidationError", missing.getErrorCode());
+        assertEquals(400, missing.getHttpStatus());
+        assertEquals(message, missing.getMessage());
+
+        MetricAlarm alarm = new MetricAlarm();
+        alarm.setAlarmName("kept-state");
+        service.putMetricAlarm(alarm, REGION);
+        assertEquals(message, assertThrows(AwsException.class,
+                () -> service.setAlarmState("kept-state", "INVALID", "test", null, REGION)).getMessage());
+        assertEquals("INSUFFICIENT_DATA",
+                service.describeAlarms(List.of("kept-state"), null, REGION).getFirst().getStateValue());
     }
 
     @Test
