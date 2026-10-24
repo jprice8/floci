@@ -6,7 +6,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.core.common.AwsErrorResponse;
 import io.github.hectorvent.floci.core.common.AwsException;
+import io.github.hectorvent.floci.core.common.Digests;
 import io.github.hectorvent.floci.core.common.PaginatedResult;
+import io.github.hectorvent.floci.core.common.SignedMarkers;
 import io.github.hectorvent.floci.services.stepfunctions.model.Activity;
 import io.github.hectorvent.floci.services.stepfunctions.model.ActivityTask;
 import io.github.hectorvent.floci.services.stepfunctions.model.Execution;
@@ -20,7 +22,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,13 +35,21 @@ import java.util.Set;
 @ApplicationScoped
 public class StepFunctionsJsonHandler {
 
+    private static final int DEFAULT_HISTORY_PAGE_SIZE = 100;
+    private static final int MAX_HISTORY_PAGE_SIZE = 1000;
+    private static final int MAX_TOKEN_LENGTH = 1024;
+    private static final Duration HISTORY_TOKEN_LIFETIME = Duration.ofHours(24);
+
     private final StepFunctionsService service;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
+    private final SignedMarkers historyTokens = new SignedMarkers();
 
     @Inject
-    public StepFunctionsJsonHandler(StepFunctionsService service, ObjectMapper objectMapper) {
+    public StepFunctionsJsonHandler(StepFunctionsService service, ObjectMapper objectMapper, Clock clock) {
         this.service = service;
         this.objectMapper = objectMapper;
+        this.clock = clock;
     }
 
     public Response handle(String action, JsonNode request, String region) {
@@ -467,6 +480,16 @@ public class StepFunctionsJsonHandler {
     private Response handleGetExecutionHistory(JsonNode request) {
         String arn = request.path("executionArn").asText();
         boolean includeExecutionData = request.path("includeExecutionData").asBoolean(true);
+        boolean reverseOrder = parseOptionalBoolean(request, "reverseOrder", false);
+        Integer maxResults = parseOptionalInt(request, "maxResults");
+        if (maxResults != null && (maxResults < 0 || maxResults > MAX_HISTORY_PAGE_SIZE)) {
+            throw new AwsException("ValidationException", "maxResults must be between 0 and 1000.", 400);
+        }
+        String nextToken = optionalText(request, "nextToken");
+        if (nextToken != null && (nextToken.isEmpty() || nextToken.length() > MAX_TOKEN_LENGTH)) {
+            throw new AwsException("ValidationException", "nextToken length must be between 1 and 1024.", 400);
+        }
+        Long lastReturnedId = nextToken == null ? null : historyTokenPosition(nextToken, arn, reverseOrder);
 
         List<HistoryEvent> live = service.getExecutionHistory(arn);
         List<HistoryEvent> events;
@@ -474,9 +497,21 @@ public class StepFunctionsJsonHandler {
         synchronized (live) {
             events = new ArrayList<>(live);
         }
+        if (reverseOrder) {
+            Collections.reverse(events);
+        }
+        // Ids rise in the order events were recorded, so a page starts at the first event listed
+        // after the last one the previous page returned, however many were recorded in between.
+        int start = 0;
+        while (lastReturnedId != null && start < events.size()
+                && !listedAfter(events.get(start), lastReturnedId, reverseOrder)) {
+            start++;
+        }
+        int end = Math.min(events.size(),
+                start + (maxResults == null || maxResults == 0 ? DEFAULT_HISTORY_PAGE_SIZE : maxResults));
         ObjectNode response = objectMapper.createObjectNode();
         ArrayNode array = response.putArray("events");
-        for (HistoryEvent e : events) {
+        for (HistoryEvent e : events.subList(start, end)) {
             ObjectNode item = array.addObject();
             item.put("id", e.getId());
             item.put("timestamp", e.getTimestamp());
@@ -492,7 +527,47 @@ public class StepFunctionsJsonHandler {
                 item.set(historyEventDetailsField(e.getType()), objectMapper.valueToTree(details));
             }
         }
+        if (end < events.size()) {
+            response.put("nextToken", issueHistoryToken(arn, reverseOrder, events.get(end - 1).getId()));
+        }
         return Response.ok(response).build();
+    }
+
+    private static boolean listedAfter(HistoryEvent event, long id, boolean reverseOrder) {
+        return reverseOrder ? event.getId() < id : event.getId() > id;
+    }
+
+    /**
+     * A history token names its execution, its order and the last event its page returned, and
+     * may be used with any page size and includeExecutionData. The execution is named by the
+     * SHA-256 of its ARN, so the token stays far below the 1,024 characters AWS allows however long
+     * the ARN is. Tokens are signed, so an edited one, or one issued before a restart, is refused,
+     * and each expires 24 hours after it was issued, as on AWS.
+     */
+    private String issueHistoryToken(String arn, boolean reverseOrder, long lastReturnedId) {
+        return historyTokens.issue(
+                clock.millis() + ":" + historyTokenScope(arn, reverseOrder) + ":" + lastReturnedId);
+    }
+
+    private long historyTokenPosition(String nextToken, String arn, boolean reverseOrder) {
+        String issued = historyTokens.cursorOf(nextToken);
+        if (issued == null) {
+            throw invalidHistoryToken();
+        }
+        String[] fields = issued.split(":");
+        if (!fields[1].equals(historyTokenScope(arn, reverseOrder))
+                || clock.millis() - Long.parseLong(fields[0]) > HISTORY_TOKEN_LIFETIME.toMillis()) {
+            throw invalidHistoryToken();
+        }
+        return Long.parseLong(fields[2]);
+    }
+
+    private static String historyTokenScope(String arn, boolean reverseOrder) {
+        return Digests.sha256Hex(arn) + (reverseOrder ? "-reverse" : "-forward");
+    }
+
+    private static AwsException invalidHistoryToken() {
+        return new AwsException("InvalidToken", "The provided token is not valid.", 400);
     }
 
     private static final Set<String> EXECUTION_DATA_FIELDS =

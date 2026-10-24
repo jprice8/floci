@@ -151,6 +151,16 @@ records it for. A Distributed `Map` that declares no tolerance reports a failed 
 rather than AWS's `States.ExceedToleratedFailureThreshold`, and emits `MapRunFailed` with that
 error. A `Map` that declares one reports `States.ExceedToleratedFailureThreshold`, as AWS does.
 
+### Pages of history
+
+`GetExecutionHistory` returns one page per call: `maxResults` events, 100 when it is omitted or
+`0`, and at most 1,000. A `nextToken` comes back while events remain, and `reverseOrder` lists the
+newest event first. A token belongs to its execution and its `reverseOrder`: used with another
+execution or the other order it is refused with `InvalidToken`, while `maxResults` and
+`includeExecutionData` may change from one page to the next. Each token expires 24 hours after it
+was issued, as on AWS. Floci signs its tokens with a key it generates at startup, so an edited
+token, or one issued before a restart, is refused with `InvalidToken` as well.
+
 ## Map concurrency
 
 Map states honor `MaxConcurrency` and, for JSONPath state machines, `MaxConcurrencyPath`.
