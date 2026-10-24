@@ -86,6 +86,21 @@ public class PersistentStorage<K, V> implements StorageBackend<K, V> {
     }
 
     @Override
+    public synchronized void deleteAllAtomically(Set<K> keys) {
+        if (keys.isEmpty()) {
+            return;
+        }
+        ConcurrentHashMap<K, V> candidate = new ConcurrentHashMap<>(store);
+        candidate.keySet().removeAll(Set.copyOf(keys));
+        try {
+            StorageFiles.writeAtomically(filePath, tempFile -> objectMapper.writeValue(tempFile.toFile(), candidate));
+        } catch (IOException exception) {
+            throw new UncheckedIOException("Failed to commit atomic deletions to " + filePath, exception);
+        }
+        store = candidate;
+    }
+
+    @Override
     public List<V> scan(Predicate<K> keyFilter) {
         return store.entrySet().stream()
                 .filter(e -> keyFilter.test(e.getKey()))

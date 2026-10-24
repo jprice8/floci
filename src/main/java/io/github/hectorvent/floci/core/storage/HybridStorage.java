@@ -73,6 +73,17 @@ public class HybridStorage<K, V> implements StorageBackend<K, V> {
     }
 
     @Override
+    public synchronized void deleteAllAtomically(Set<K> keys) {
+        if (keys.isEmpty()) {
+            return;
+        }
+        ConcurrentHashMap<K, V> candidate = new ConcurrentHashMap<>(store);
+        candidate.keySet().removeAll(Set.copyOf(keys));
+        store = candidate;
+        dirty.set(true);
+    }
+
+    @Override
     public List<V> scan(Predicate<K> keyFilter) {
         return store.entrySet().stream()
                 .filter(e -> keyFilter.test(e.getKey()))

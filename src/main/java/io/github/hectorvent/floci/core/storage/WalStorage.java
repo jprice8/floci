@@ -43,6 +43,7 @@ import java.util.stream.Collectors;
  *   PUT:    [0x01] [4-byte key length] [key bytes] [4-byte value length] [value bytes]
  *   DELETE: [0x02] [4-byte key length] [key bytes]
  *   BATCH:  [0x03] [4-byte map length] [CBOR map bytes]
+ *   DELETE_BATCH: [0x04] [4-byte array length] [CBOR key array bytes]
  *
  * Key and value bytes are serialized via Jackson CBOR (compact binary format).
  * Snapshot files use indented JSON for debuggability.
@@ -54,6 +55,7 @@ public class WalStorage<K, V> implements StorageBackend<K, V> {
     static final byte OP_PUT = 0x01;
     static final byte OP_DELETE = 0x02;
     static final byte OP_BATCH = 0x03;
+    static final byte OP_DELETE_BATCH = 0x04;
 
     private volatile ConcurrentHashMap<K, V> store = new ConcurrentHashMap<>();
     private final Path snapshotPath;
@@ -130,6 +132,25 @@ public class WalStorage<K, V> implements StorageBackend<K, V> {
         } catch (IOException exception) {
             throw new UncheckedIOException("Failed to encode atomic WAL batch", exception);
         }
+        commitBatch(OP_BATCH, payload, replacements, Set.of());
+    }
+
+    @Override
+    public void deleteAllAtomically(Set<K> keys) {
+        Set<K> deletions = Set.copyOf(keys);
+        if (deletions.isEmpty()) {
+            return;
+        }
+        byte[] payload;
+        try {
+            payload = walMapper.writeValueAsBytes(deletions);
+        } catch (IOException exception) {
+            throw new UncheckedIOException("Failed to encode atomic WAL deletions", exception);
+        }
+        commitBatch(OP_DELETE_BATCH, payload, Map.of(), deletions);
+    }
+
+    private void commitBatch(byte operation, byte[] payload, Map<K, V> replacements, Set<K> deletions) {
         compactionLock.writeLock().lock();
         try {
             if (walWriter == null) {
@@ -137,13 +158,14 @@ public class WalStorage<K, V> implements StorageBackend<K, V> {
             }
             ConcurrentHashMap<K, V> candidate = new ConcurrentHashMap<>(store);
             candidate.putAll(replacements);
+            candidate.keySet().removeAll(deletions);
             walWriter.flush();
             FileChannel channel = FileChannel.open(walPath, StandardOpenOption.WRITE);
             try {
                 long offset = channel.size();
                 channel.position(offset);
                 ByteBuffer record = ByteBuffer.allocate(1 + Integer.BYTES + payload.length);
-                record.put(OP_BATCH).putInt(payload.length).put(payload).flip();
+                record.put(operation).putInt(payload.length).put(payload).flip();
                 try {
                     while (record.hasRemaining()) {
                         channel.write(record);
@@ -417,6 +439,14 @@ public class WalStorage<K, V> implements StorageBackend<K, V> {
                         break;
                     }
                     store.putAll(batch);
+                } else if (op == OP_DELETE_BATCH) {
+                    List<K> keys = walMapper.readValue(keyBytes, walMapper.getTypeFactory().constructCollectionType(
+                            List.class, walMapper.constructType(typeReference.getType()).getKeyType()));
+                    if (keys == null || keys.stream().anyMatch(key -> key == null)) {
+                        LOG.warnv("Invalid WAL deletion batch at offset {0} in {1}, stopping replay", consumed, walPath);
+                        break;
+                    }
+                    keys.forEach(store::remove);
                 } else if (op == OP_PUT) {
                     byte[] valueBytes = readFrame(in, fileSize - consumed - recordLength);
                     if (valueBytes == null) {

@@ -21,7 +21,7 @@ For running SQL without a PostgreSQL wire connection (the way Lambda and Step Fu
 | --- | --- |
 | `CreateCluster` | Create a cluster and start a PostgreSQL container for it |
 | `DescribeClusters` | List clusters and their connection details |
-| `DeleteCluster` | Stop and remove a cluster and its container |
+| `DeleteCluster` | Create the requested final snapshot, then remove the cluster; accepts `SkipFinalClusterSnapshot` to delete without a backup |
 | `CreateClusterSnapshot` | Back up a cluster to a SQL dump via `pg_dump` |
 | `DescribeClusterSnapshots` | List snapshots, optionally filtered by snapshot or cluster identifier |
 | `DeleteClusterSnapshot` | Remove a snapshot and its stored dump |
@@ -64,6 +64,51 @@ For running SQL without a PostgreSQL wire connection (the way Lambda and Step Fu
 | `GetClusterCredentials` | Issue a short-lived DbUser / DbPassword pair the auth proxy and Data API accept for a non-master user |
 | `GetClusterCredentialsWithIAM` | Issue short-lived credentials with the DbUser derived from the caller's IAM identity |
 <!-- floci:actions:end -->
+
+### Final snapshots on cluster deletion
+
+`DeleteCluster` defaults `SkipFinalClusterSnapshot` to `false`, so a
+`FinalClusterSnapshotIdentifier` is required unless the request explicitly skips the final
+snapshot. Supplying a final snapshot name together with `SkipFinalClusterSnapshot=true` is
+rejected. Final snapshot names use the same validation and uniqueness rules as
+`CreateClusterSnapshot`.
+
+Floci completes the database dump and commits the snapshot metadata before stopping the proxy
+or removing the cluster. Dump failures and reported snapshot storage errors leave the cluster
+available. The final snapshot remains visible through `DescribeClusterSnapshots` after the
+source cluster is deleted, and `RestoreFromClusterSnapshot` can restore its data to a new
+cluster. Deletion is synchronous: Floci returns `deleting` after teardown rather than exposing
+AWS's intermediate `final-snapshot` state.
+
+Database dumps run under account-scoped cluster and snapshot locks, so a slow dump does not
+hold the service-wide mutation monitor. Operations on the same cluster and snapshot identifier
+remain coordinated, including snapshot deletion and restore. A dump whose metadata was not
+committed is removed on failure; if the commit succeeded and a later flush reports an error,
+the dump is retained for the committed snapshot.
+
+`FinalClusterSnapshotRetentionPeriod` defaults to `-1` and accepts `-1` or 1 to 3,653 days.
+It is persisted and returned as the snapshot's `ManualSnapshotRetentionPeriod`; automatic
+expiration is not implemented. Manual snapshots created by `CreateClusterSnapshot`, and older
+snapshots without stored retention metadata, also return the default `-1`. Snapshot metadata
+uses the configured storage mode. Persistent and WAL metadata commit failures are reported
+before teardown; hybrid retains its existing
+write-behind durability and logged flush failures.
+
+If teardown fails after the final snapshot was created, the snapshot is retained. A retry
+must use a different snapshot name, or explicitly skip the final snapshot; an existing backup
+is never overwritten. Internal provisioner cleanup keeps its existing deletion behavior and
+explicitly skips the final snapshot.
+
+```bash
+aws redshift delete-cluster --cluster-identifier warehouse \
+  --final-cluster-snapshot-identifier warehouse-final \
+  --final-cluster-snapshot-retention-period 7
+
+aws redshift delete-cluster --cluster-identifier disposable \
+  --skip-final-cluster-snapshot
+```
+
+See the AWS [DeleteCluster API reference](https://docs.aws.amazon.com/redshift/latest/APIReference/API_DeleteCluster.html).
 
 ### Resetting parameter groups
 

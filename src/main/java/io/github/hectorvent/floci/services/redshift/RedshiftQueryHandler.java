@@ -139,7 +139,12 @@ public class RedshiftQueryHandler {
         }
         case "DeleteCluster" -> {
             String identifier = params.getFirst("ClusterIdentifier");
-            Cluster cluster = service.deleteCluster(identifier);
+            String rawSkip = params.getFirst("SkipFinalClusterSnapshot");
+            if (rawSkip != null && !"true".equalsIgnoreCase(rawSkip) && !"false".equalsIgnoreCase(rawSkip)) {
+                throw new AwsException("InvalidParameterValue", "SkipFinalClusterSnapshot must be a boolean.", 400);
+            }
+            Cluster cluster = service.deleteCluster(identifier, rawSkip == null ? null : Boolean.valueOf(rawSkip),
+                    params.getFirst("FinalClusterSnapshotIdentifier"), intParam(params, "FinalClusterSnapshotRetentionPeriod"));
             String xml = new XmlBuilder()
                     .start("DeleteClusterResponse")
                       .start("DeleteClusterResult")
@@ -1058,6 +1063,7 @@ public class RedshiftQueryHandler {
             .elem("ClusterIdentifier", snapshot.getClusterIdentifier())
             .elem("SnapshotArn", snapshot.getSnapshotArn())
             .elem("SnapshotCreateTime", createTime)
+            .elem("ManualSnapshotRetentionPeriod", snapshot.getManualSnapshotRetentionPeriod().toString())
             .elem("Status", snapshot.getStatus())
             .elem("Port", String.valueOf(snapshot.getPort()))
             .elem("MasterUsername", snapshot.getMasterUsername());

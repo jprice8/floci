@@ -1,17 +1,36 @@
 package io.github.hectorvent.floci.services.lambdaweb;
 
+import com.github.dockerjava.api.DockerClient;
+import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.core.common.docker.ContainerBuilder;
+import io.github.hectorvent.floci.core.common.docker.ContainerLifecycleManager;
+import io.github.hectorvent.floci.core.common.docker.LaunchedContainerAwsEnv;
+import io.github.hectorvent.floci.services.ecr.registry.EcrRegistryManager;
+import io.github.hectorvent.floci.services.lambda.launcher.ImageResolver;
+import io.github.hectorvent.floci.services.lambda.launcher.LambdaExecutionRoleCredentials;
+import io.github.hectorvent.floci.services.lambda.zip.ZipExtractor;
 import io.github.hectorvent.floci.services.lambdaweb.LambdaWebEnvironmentManager.Environment;
+import io.github.hectorvent.floci.services.lambdaweb.LambdaWebEnvironmentManager.StartFailure;
+import io.github.hectorvent.floci.services.lambdaweb.model.WebFunction;
+import io.github.hectorvent.floci.services.lambdaweb.model.WebFunctionRevision;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class LambdaWebEnvironmentManagerTest {
 
@@ -51,6 +70,36 @@ class LambdaWebEnvironmentManagerTest {
         assertEquals(defaults, LambdaWebEnvironmentManager.nodeFlags("--max-http-header-size=1000"));
         assertEquals(defaults, LambdaWebEnvironmentManager.nodeFlags("--require ./pre.js"));
         assertEquals(defaults, LambdaWebEnvironmentManager.nodeFlags("\"--max-old-space-size=1536\""));
+    }
+
+    @Test
+    void aRoleDeletedAfterTheTrustCheckStartsNoContainer() {
+        LambdaWebExecutionRole executionRole = mock(LambdaWebExecutionRole.class);
+        when(executionRole.assumableFor(any(), any(), any())).thenReturn(true);
+        LambdaExecutionRoleCredentials credentials = mock(LambdaExecutionRoleCredentials.class);
+        when(credentials.forRole(any(), any(), any())).thenReturn(Optional.empty());
+        ContainerBuilder containerBuilder = mock(ContainerBuilder.class);
+        LambdaWebEnvironmentManager manager = new LambdaWebEnvironmentManager(
+                mock(EmulatorConfig.class, RETURNS_DEEP_STUBS), containerBuilder,
+                mock(ContainerLifecycleManager.class), mock(DockerClient.class), mock(ImageResolver.class),
+                mock(EcrRegistryManager.class), mock(LambdaWebCode.class), mock(ZipExtractor.class),
+                mock(LaunchedContainerAwsEnv.class), credentials, executionRole, mock(LambdaWebLogs.class),
+                mock(LambdaWebMetrics.class));
+        WebFunction fn = new WebFunction();
+        fn.functionName = "fn";
+        fn.functionArn = "arn:aws:lambda:us-east-1:000000000000:web-function/fn";
+        WebFunctionRevision revision = new WebFunctionRevision();
+        revision.revisionId = "1";
+        revision.buildConfig.runtime = "nodejs24.x";
+        revision.serviceConfig.executionRoleArn = "arn:aws:iam::000000000000:role/web";
+        try {
+            StartFailure failure = assertThrows(StartFailure.class,
+                    () -> manager.acquire("000000000000", "us-east-1", fn, "endpoint", null, revision));
+            assertEquals(LambdaWebErrorPages.CANNOT_ASSUME_ROLE, failure.page());
+            verifyNoInteractions(containerBuilder);
+        } finally {
+            manager.shutdown();
+        }
     }
 
     private static List<String> flags(List<String> heap) {

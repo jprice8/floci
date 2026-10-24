@@ -17,9 +17,9 @@ Floci emulates Amazon MSK by orchestrating **Redpanda** containers. This provide
 | `DescribeClusterV2` | Get cluster metadata and state using V2 API |
 | `DeleteCluster` | Stops and removes the Redpanda container |
 | `GetBootstrapBrokers` | Get the connection strings for the cluster |
-| `BatchAssociateScramSecret` | Validate Secrets Manager credentials and store secret associations |
+| `BatchAssociateScramSecret` | Associate secret SCRAM credential with cluster |
 | `ListScramSecrets` | List the secret ARNs associated with a cluster |
-| `BatchDisassociateScramSecret` | Remove secret associations |
+| `BatchDisassociateScramSecret` | Remove secret SCRAM credential associated with cluster |
 | `CreateConfiguration` | Create a broker configuration (`server.properties`) |
 | `ListConfigurations` | List all configurations |
 | `DescribeConfiguration` | Get configuration metadata and latest revision |
@@ -117,7 +117,12 @@ Configuration tags are reachable only through the tag endpoints, because AWS's
 
 ### SCRAM Secrets Association 
 
-`BatchAssociateScramSecret` accepts up to 10 Secrets Manager ARNs and stores their associations.
+Manages credentials only: the broker does not enable SASL authentication or
+validate these users when clients connect. Clients can still connect without
+credentials. Authenticated SASL_SSL listeners is not implemented.
+
+`BatchAssociateScramSecret` accepts up to 10 Secrets Manager ARNs and creates kafka
+`SCRAM-SHA-512` users.
 Secrets must belong to the cluster's account, region and partition, use the `AmazonMSK_`
 name prefix and a customer-managed symmetric KMS key ID, not an `alias/...` reference.
 The secrets must contain JSON such as `{"username":"alice","password":"pw"}`.

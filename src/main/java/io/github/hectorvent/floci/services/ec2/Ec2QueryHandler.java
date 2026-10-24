@@ -3352,14 +3352,26 @@ public class Ec2QueryHandler {
     private Response handleRevokeSecurityGroupIngress(MultivaluedMap<String, String> p, String region) {
         String groupId = p.getFirst("GroupId");
         List<IpPermission> perms = parseIpPermissions(p, "IpPermissions");
-        service.revokeSecurityGroupIngress(region, groupId, perms);
+        List<String> ruleIds = getList(p, "SecurityGroupRuleId");
+        if (!ruleIds.isEmpty()) {
+            service.revokeSecurityGroupRulesByIds(region, groupId, ruleIds, false);
+        }
+        if (!perms.isEmpty() || ruleIds.isEmpty()) {
+            service.revokeSecurityGroupIngress(region, groupId, perms);
+        }
         return booleanResponse("RevokeSecurityGroupIngress");
     }
 
     private Response handleRevokeSecurityGroupEgress(MultivaluedMap<String, String> p, String region) {
         String groupId = p.getFirst("GroupId");
         List<IpPermission> perms = parseIpPermissions(p, "IpPermissions");
-        service.revokeSecurityGroupEgress(region, groupId, perms);
+        List<String> ruleIds = getList(p, "SecurityGroupRuleId");
+        if (!ruleIds.isEmpty()) {
+            service.revokeSecurityGroupRulesByIds(region, groupId, ruleIds, true);
+        }
+        if (!perms.isEmpty() || ruleIds.isEmpty()) {
+            service.revokeSecurityGroupEgress(region, groupId, perms);
+        }
         return booleanResponse("RevokeSecurityGroupEgress");
     }
 

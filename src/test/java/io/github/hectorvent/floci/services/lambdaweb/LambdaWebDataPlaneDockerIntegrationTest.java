@@ -7,6 +7,7 @@ import io.github.hectorvent.floci.services.cloudfront.model.Distribution;
 import io.github.hectorvent.floci.services.cloudfront.model.DistributionConfig;
 import io.github.hectorvent.floci.services.cloudfront.model.Origin;
 import io.github.hectorvent.floci.services.cloudfront.model.OriginAccessControl;
+import io.github.hectorvent.floci.services.iam.IamService;
 import io.github.hectorvent.floci.services.lambdaweb.LambdaWebEnvironmentManager.Environment;
 import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
@@ -124,6 +125,9 @@ class LambdaWebDataPlaneDockerIntegrationTest {
 
     @Inject
     S3Service s3Service;
+
+    @Inject
+    IamService iamService;
 
     @Inject
     LambdaWebEnvironmentManager environments;
@@ -531,6 +535,7 @@ class LambdaWebDataPlaneDockerIntegrationTest {
     private String createFunction(int timeoutSeconds, int maxConcurrencyPerEnvironment, String systemLogLevel,
                                   String mode, String authType, String nodeOptions) throws IOException {
         functionName = "dp-docker-" + Long.toString(System.nanoTime(), 36);
+        LambdaWebRoles.trustLambda(iamService, ROLE);
         s3Service.createBucket(BUCKET, "us-east-1");
         s3Service.putObject(BUCKET, functionName + ".zip", zip(APP), "application/zip", Map.of());
         return given().contentType("application/json")

@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -24,6 +25,33 @@ class AtomicStorageBatchTest {
 
     @TempDir
     Path directory;
+
+    @ParameterizedTest
+    @ValueSource(strings = {"memory", "persistent", "hybrid", "wal"})
+    void atomicDeletionRemovesSelectedAccountsAndSurvivesRestart(String mode) {
+        StorageBackend<String, Integer> backend = backend(mode);
+        backend.load();
+        try {
+            AccountAwareStorageBackend<Integer> accounts = new AccountAwareStorageBackend<>(backend, null, "111111111111");
+            accounts.putAllAtomically(Map.of("a", 1, "b", 2));
+            accounts.putAllAtomicallyForAccount("222222222222", Map.of("a", 3, "keep", 4));
+            accounts.deleteAllAtomicallyForAccounts(Map.of("111111111111", Set.of("a", "b"), "222222222222", Set.of("a")));
+            assertEquals(Set.of("222222222222/keep"), backend.keys());
+            assertEquals(4, accounts.getForAccount("222222222222", "keep").orElseThrow());
+            backend.flush();
+        } finally {
+            close(backend);
+        }
+        if (!"memory".equals(mode)) {
+            StorageBackend<String, Integer> reopened = backend(mode);
+            reopened.load();
+            try {
+                assertEquals(Set.of("222222222222/keep"), reopened.keys());
+            } finally {
+                close(reopened);
+            }
+        }
+    }
 
     @ParameterizedTest
     @ValueSource(strings = {"memory", "persistent", "hybrid", "wal"})
@@ -61,6 +89,7 @@ class AtomicStorageBatchTest {
         Files.writeString(snapshot.resolve("blocker"), "owned test file");
         assertThrows(UncheckedIOException.class,
                 () -> store.putAllAtomically(Map.of("source", 1, "destination", 3)));
+        assertThrows(UncheckedIOException.class, () -> store.deleteAllAtomically(Set.of("source", "destination")));
         assertEquals(3, store.get("source").orElseThrow());
         assertEquals(1, store.get("destination").orElseThrow());
         PersistentStorage<String, Integer> recovered = new PersistentStorage<>(backup, TYPE);
@@ -289,6 +318,7 @@ class AtomicStorageBatchTest {
             Files.createDirectory(log);
             assertThrows(UncheckedIOException.class,
                     () -> store.putAllAtomically(Map.of("source", 1, "destination", 3)));
+            assertThrows(UncheckedIOException.class, () -> store.deleteAllAtomically(Set.of("source", "destination")));
             assertEquals(3, store.get("source").orElseThrow());
             assertEquals(1, store.get("destination").orElseThrow());
             Files.delete(log);
@@ -298,6 +328,39 @@ class AtomicStorageBatchTest {
                     WalStorage.readContents(directory.resolve("data.json"), log, TYPE));
         } finally {
             store.shutdown();
+        }
+    }
+
+    @Test
+    void tornWalDeletionBatchNeverRemovesOnlySomeKeys() throws Exception {
+        Path snapshot = directory.resolve("data.json");
+        Path log = directory.resolve("data.wal");
+        WalStorage<String, Integer> writer = new WalStorage<>(snapshot, log, TYPE, Long.MAX_VALUE);
+        writer.load();
+        try {
+            writer.putAllAtomically(Map.of("a", 1, "b", 2, "keep", 3));
+            writer.flush();
+            byte[] initial = Files.readAllBytes(snapshot);
+            writer.deleteAllAtomically(Set.of("a", "b"));
+            byte[] complete = Files.readAllBytes(log);
+            for (int length = 0; length <= complete.length; length++) {
+                Path replaySnapshot = directory.resolve("replay-" + length + ".json");
+                Path replayLog = directory.resolve("replay-" + length + ".wal");
+                Files.write(replaySnapshot, initial);
+                Files.write(replayLog, Arrays.copyOf(complete, length));
+                WalStorage<String, Integer> replay = new WalStorage<>(replaySnapshot, replayLog, TYPE, Long.MAX_VALUE);
+                replay.load();
+                try {
+                    boolean deleted = length == complete.length;
+                    assertEquals(deleted, replay.get("a").isEmpty(), "prefix " + length);
+                    assertEquals(deleted, replay.get("b").isEmpty(), "prefix " + length);
+                    assertEquals(3, replay.get("keep").orElseThrow());
+                } finally {
+                    replay.shutdown();
+                }
+            }
+        } finally {
+            writer.shutdown();
         }
     }
 

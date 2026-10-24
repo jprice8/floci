@@ -39,6 +39,11 @@ public interface StorageBackend<K, V> {
 
     void delete(K key);
 
+    /** Remove keys as one storage commit, with the same durability guarantees as atomic puts. */
+    default void deleteAllAtomically(Set<K> keys) {
+        throw new UnsupportedOperationException("Atomic deletions are not supported by this backend");
+    }
+
     /**
      * Return a new mutable list of values whose keys pass the filter. Callers may sort,
      * filter, or otherwise mutate the returned list without affecting the underlying store.

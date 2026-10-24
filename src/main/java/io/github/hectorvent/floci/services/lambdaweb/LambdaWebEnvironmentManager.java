@@ -266,6 +266,7 @@ public class LambdaWebEnvironmentManager implements ContainerTeardown {
     private final ZipExtractor zipExtractor;
     private final LaunchedContainerAwsEnv awsEnv;
     private final LambdaExecutionRoleCredentials executionRoleCredentials;
+    private final LambdaWebExecutionRole executionRole;
     private final LambdaWebLogs logs;
     private final LambdaWebMetrics metrics;
     private final byte[] runtime;
@@ -283,7 +284,8 @@ public class LambdaWebEnvironmentManager implements ContainerTeardown {
                                        @StreamingDocker DockerClient streamingDocker, ImageResolver imageResolver,
                                        EcrRegistryManager ecrRegistryManager, LambdaWebCode code,
                                        ZipExtractor zipExtractor, LaunchedContainerAwsEnv awsEnv,
-                                       LambdaExecutionRoleCredentials executionRoleCredentials, LambdaWebLogs logs,
+                                       LambdaExecutionRoleCredentials executionRoleCredentials,
+                                       LambdaWebExecutionRole executionRole, LambdaWebLogs logs,
                                        LambdaWebMetrics metrics) {
         this.config = config;
         this.containerBuilder = containerBuilder;
@@ -295,6 +297,7 @@ public class LambdaWebEnvironmentManager implements ContainerTeardown {
         this.zipExtractor = zipExtractor;
         this.awsEnv = awsEnv;
         this.executionRoleCredentials = executionRoleCredentials;
+        this.executionRole = executionRole;
         this.logs = logs;
         this.metrics = metrics;
         this.runtime = runtimeScript();
@@ -541,6 +544,9 @@ public class LambdaWebEnvironmentManager implements ContainerTeardown {
     }
 
     private void start(Environment environment, String region, WebFunction fn, WebFunctionRevision revision) {
+        if (!executionRole.assumableFor(region, fn.functionArn, revision.serviceConfig.executionRoleArn)) {
+            throw new StartFailure(LambdaWebErrorPages.CANNOT_ASSUME_ROLE);
+        }
         String accountId = environment.accountId;
         String image = ecrRegistryManager.rewriteImageUri(imageResolver.resolve(revision.buildConfig.runtime));
         String shortId = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
@@ -552,6 +558,10 @@ public class LambdaWebEnvironmentManager implements ContainerTeardown {
         cmd.add(RUNTIME_DIR + "/index.js");
         Optional<SessionCreds> roleCredentials = executionRoleCredentials.forRole(
                 revision.serviceConfig.executionRoleArn, accountId, fn.functionName);
+        // The role can be deleted after the trust check.
+        if (roleCredentials.isEmpty()) {
+            throw new StartFailure(LambdaWebErrorPages.CANNOT_ASSUME_ROLE);
+        }
         ContainerSpec spec = containerBuilder.newContainer(image)
                 .withName(name)
                 .withEnv(environment(accountId, region, revision, userEnv, roleCredentials))

@@ -438,6 +438,17 @@ public class AccountAwareStorageBackend<V> implements StorageBackend<String, V> 
         delegate.delete(accountId + "/" + key);
     }
 
+    @Override
+    public void deleteAllAtomically(Set<String> keys) {
+        deleteAllAtomicallyForAccounts(Map.of(prefix(), keys));
+    }
+
+    public void deleteAllAtomicallyForAccounts(Map<String, Set<String>> keysByAccount) {
+        Set<String> rawKeys = new LinkedHashSet<>();
+        keysByAccount.forEach((account, keys) -> keys.forEach(key -> rawKeys.add(account + "/" + key)));
+        delegate.deleteAllAtomically(rawKeys);
+    }
+
     // --- Entry writes, for map-valued stores whose backend persists one entry at a time ---
 
     /** Whether the backend persists one map entry at a time; the entry methods require it. */

@@ -1,6 +1,7 @@
 package io.github.hectorvent.floci.services.ses;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -113,17 +114,23 @@ final class SesV2Json {
         return !node.isMissingNode() && !node.isNull() && !node.isTextual();
     }
 
-    /** Parse an option PUT body into a JSON object, treating an empty body as {}. */
+    /**
+     * Parse a request body into a JSON object. Only an empty body reads as {}: AWS answers a
+     * whitespace-only body, malformed JSON and a trailing token after the object (even a second
+     * value) with a {@code SerializationException} without a message.
+     */
     static JsonNode readOptionBody(ObjectMapper objectMapper, String body) {
-        try {
-            JsonNode request = (body == null || body.isBlank())
-                    ? objectMapper.createObjectNode()
-                    : objectMapper.readTree(body);
-            requireJsonObject(request);
-            return request;
-        } catch (JsonProcessingException e) {
-            throw new AwsException("BadRequestException", e.getMessage(), 400);
+        if (body == null || body.isEmpty()) {
+            return objectMapper.createObjectNode();
         }
+        JsonNode request;
+        try {
+            request = objectMapper.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(body);
+        } catch (JsonProcessingException e) {
+            throw new AwsException(SERIALIZATION_EXCEPTION, null, 400);
+        }
+        requireJsonObject(request);
+        return request;
     }
 
     /** Read an optional string member, rejecting a non-string value the way the AWS deserialization layer does. */

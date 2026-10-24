@@ -116,16 +116,18 @@ class SesV2JsonTest {
     }
 
     @Test
-    void readOptionBody_blankIsEmptyObject_badShapesAre400() {
+    void readOptionBody_onlyEmptyIsEmptyObject_unreadableBodiesAreSerializationExceptions() {
         assertTrue(SesV2Json.readOptionBody(MAPPER, null).isObject());
-        assertTrue(SesV2Json.readOptionBody(MAPPER, "  ").isObject());
+        assertTrue(SesV2Json.readOptionBody(MAPPER, "").isObject());
+        assertTrue(SesV2Json.readOptionBody(MAPPER, " {} \n").isObject());
         assertEquals("REQUIRE", SesV2Json.readOptionBody(MAPPER, "{\"HttpsPolicy\":\"REQUIRE\"}")
                 .path("HttpsPolicy").asText());
         assertEquals("Start of list found where not expected", assertAws("SerializationException", 400,
                 () -> SesV2Json.readOptionBody(MAPPER, "[1]")).getMessage());
-        assertNull(assertAws("SerializationException", 400,
-                () -> SesV2Json.readOptionBody(MAPPER, "null")).getMessage());
-        assertAws("BadRequestException", 400, () -> SesV2Json.readOptionBody(MAPPER, "{not json"));
+        for (String body : List.of("null", "  ", "{not json", "{", "{\"a\":}", "{} x", "{}{}")) {
+            assertNull(assertAws("SerializationException", 400,
+                    () -> SesV2Json.readOptionBody(MAPPER, body)).getMessage(), body);
+        }
     }
 
     @Test
