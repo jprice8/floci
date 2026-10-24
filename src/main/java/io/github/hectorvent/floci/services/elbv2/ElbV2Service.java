@@ -474,6 +474,9 @@ public class ElbV2Service implements ResourceProvider, ServerCertificateReferenc
                                           String matcher, String ipAddressType,
                                           Map<String, String> initialTags) {
         validateName(name, "target group");
+        if (port == null && !"lambda".equals(targetType)) {
+            throw new AwsException("ValidationError", "A port must be specified", 400);
+        }
         validateHealthCheckPort(healthCheckPort);
         Map<String, TargetGroup> regionTgs = targetGroups.computeIfAbsent(region, k -> new ConcurrentHashMap<>());
         boolean duplicate = regionTgs.values().stream()
@@ -995,8 +998,11 @@ public class ElbV2Service implements ResourceProvider, ServerCertificateReferenc
         }
         List<TargetDescription> existing = tg.getTargets();
         for (TargetDescription t : targets) {
-            // replace if same id+port already registered
-            existing.removeIf(e -> e.getId().equals(t.getId()) && Objects.equals(e.getPort(), t.getPort()));
+            if (t.getPort() == null) {
+                t.setPort(tg.getPort());
+            }
+            // replace the target if it is already registered
+            existing.removeIf(e -> sameTarget(tg, e, t));
             existing.add(t);
         }
         persistRegion(targetGroups, region);
@@ -1018,7 +1024,7 @@ public class ElbV2Service implements ResourceProvider, ServerCertificateReferenc
     public void deregisterTargets(String region, String tgArn, List<TargetDescription> targets) {
         TargetGroup tg = requireTargetGroup(region, tgArn);
         for (TargetDescription t : targets) {
-            tg.getTargets().removeIf(e -> e.getId().equals(t.getId()) && Objects.equals(e.getPort(), t.getPort()));
+            tg.getTargets().removeIf(e -> sameTarget(tg, e, t));
         }
         persistRegion(targetGroups, region);
         healthChecker.removeTargets(tgArn, targets, tg);
@@ -1041,7 +1047,7 @@ public class ElbV2Service implements ResourceProvider, ServerCertificateReferenc
             }
             int port = ElbV2HealthChecker.effectivePort(t, tg);
             th.setHealthCheckPort(String.valueOf(port));
-            if (hasFilterTargets && !isRegisteredTarget(tg, t, port)) {
+            if (hasFilterTargets && !isRegisteredTarget(tg, t)) {
                 th.setState("unused");
                 th.setReason("Target.NotRegistered");
                 th.setDescription("Target is not registered to the target group");
@@ -1055,10 +1061,14 @@ public class ElbV2Service implements ResourceProvider, ServerCertificateReferenc
         }).collect(Collectors.toList());
     }
 
-    private static boolean isRegisteredTarget(TargetGroup targetGroup, TargetDescription candidate, int candidatePort) {
-        return targetGroup.getTargets().stream()
-                .anyMatch(registered -> Objects.equals(registered.getId(), candidate.getId())
-                        && ElbV2HealthChecker.effectivePort(registered, targetGroup) == candidatePort);
+    private static boolean isRegisteredTarget(TargetGroup targetGroup, TargetDescription candidate) {
+        return targetGroup.getTargets().stream().anyMatch(registered -> sameTarget(targetGroup, registered, candidate));
+    }
+
+    /** A target is its ID and the port it receives traffic on, the group's port unless overridden. */
+    private static boolean sameTarget(TargetGroup targetGroup, TargetDescription a, TargetDescription b) {
+        return Objects.equals(a.getId(), b.getId())
+                && ElbV2HealthChecker.effectivePort(a, targetGroup) == ElbV2HealthChecker.effectivePort(b, targetGroup);
     }
 
     // ── Tags ──────────────────────────────────────────────────────────────────

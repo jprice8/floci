@@ -747,9 +747,14 @@ class ElbV2IntegrationTest {
     @Test
     @Order(22)
     void duplicateTargetGroupNameThrows() {
+        // Another port, so the name belongs to a group with other settings: AWS answers a repeat of
+        // the same settings with the group it already has.
         given()
                 .formParam("Action", "CreateTargetGroup")
                 .formParam("Name", "my-test-tg")
+                .formParam("Protocol", "HTTP")
+                .formParam("Port", "81")
+                .formParam("VpcId", "vpc-00000001")
                 .header("Authorization", AUTH)
             .when()
                 .post("/")
