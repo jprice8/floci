@@ -349,7 +349,10 @@ whose blob is incomplete, has bytes after its key or declares another type, and 
 more than one key line are refused with `InvalidKey.Format`. The key is stored as one OpenSSH line,
 which is what `RunInstances` copies into `authorized_keys`. `CreateKeyPair` and `ImportKeyPair`
 take a `KeyName` of up to 255 ASCII characters with no leading or trailing space; a missing or
-blank one is `MissingParameter`, and they answer any other with `InvalidParameterValue`.
+blank one is `MissingParameter`, and they answer any other with `InvalidParameterValue`. Either
+action refuses a name that a key pair in the account and region already has with
+`InvalidKeyPair.Duplicate`, and of two that ask for a free name at the same moment, one stores its
+key pair and the other gets that error.
 
 `DescribeKeyPairs` returns each key pair's `keyType` and `createTime`. It filters by `key-pair-id`,
 `key-name`, `fingerprint`, `tag-key` and `tag:<key>`, as AWS documents, and also by `key-type`,

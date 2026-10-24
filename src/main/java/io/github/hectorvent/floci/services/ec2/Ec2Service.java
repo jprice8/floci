@@ -7818,7 +7818,7 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
         kp.setKeyType(type);
         kp.setCreateTime(Instant.now());
         kp.setRegion(region);
-        keyPairs.put(key(region, keyPairId), kp);
+        storeNewKeyPair(region, kp);
         return kp;
     }
 
@@ -7902,14 +7902,19 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
     public KeyPair deleteKeyPair(String region, String keyName, String keyPairId) {
         ensureDefaultResources(region);
         boolean byId = keyPairId != null && !keyPairId.isEmpty();
-        // scan() returns detached copies, so each match is resolved to its store key and deleted
-        // through the backend; mutating the scan result does not touch the store.
+        // scan() returns a new list, so each match is resolved to its store key and deleted through
+        // the backend; removing it from the list would not touch the store. Each delete holds
+        // the lock tag writes take on the key pair, so a tag write that has read the key pair cannot
+        // write it back once it is deleted.
         List<KeyPair> matches = keyPairs.scan(k -> true).stream()
                 .filter(k -> region.equals(k.getRegion()))
                 .filter(k -> byId ? keyPairId.equals(k.getKeyPairId()) : keyName != null && keyName.equals(k.getKeyName()))
                 .toList();
         for (KeyPair match : matches) {
-            keyPairs.delete(key(region, match.getKeyPairId()));
+            String storeKey = key(region, match.getKeyPairId());
+            synchronized (lockFor(storeKey)) {
+                keyPairs.delete(storeKey);
+            }
         }
         return matches.isEmpty() ? null : matches.getFirst();
     }
@@ -7935,7 +7940,7 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
         kp.setPublicKey(imported.openSshPublicKey());
         kp.setCreateTime(Instant.now());
         kp.setRegion(region);
-        keyPairs.put(key(region, keyPairId), kp);
+        storeNewKeyPair(region, kp);
         return kp;
     }
 
@@ -8020,6 +8025,20 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
                 .anyMatch(k -> region.equals(k.getRegion()) && keyName.equals(k.getKeyName()));
         if (exists) {
             throw new AwsException("InvalidKeyPair.Duplicate", "The keypair '" + keyName + "' already exists", 400);
+        }
+    }
+
+    /**
+     * Stores a key pair CreateKeyPair or ImportKeyPair built, unless its name was taken after they
+     * checked it. The check and the write run under one lock on the region and name, so of two requests
+     * for one name only one stores a key pair and the other is refused as a duplicate. No other lock of
+     * this service is taken while it is held; the store's own locks, taken inside it, never lead back to
+     * one. The callers' own earlier check still refuses a taken name before a key is generated for it.
+     */
+    private void storeNewKeyPair(String region, KeyPair keyPair) {
+        synchronized (lockFor(key(region, "key-name:" + keyPair.getKeyName()))) {
+            rejectDuplicateKeyName(region, keyPair.getKeyName());
+            keyPairs.put(key(region, keyPair.getKeyPairId()), keyPair);
         }
     }
 
