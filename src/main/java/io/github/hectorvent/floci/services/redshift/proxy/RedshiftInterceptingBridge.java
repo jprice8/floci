@@ -759,7 +759,10 @@ public class RedshiftInterceptingBridge {
             }
             boolean locked;
             try {
-                locked = backendLock.tryLock(PUMP_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                // One queued wait for the rest of the budget: a fair-lock waiter that times out and retries
+                // can miss every handoff to an idle pump, which takes the lock back as soon as it releases it.
+                long remainingNanos = Math.max(0L, deadlineNanos - System.nanoTime());
+                locked = backendLock.tryLock(remainingNanos, TimeUnit.NANOSECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IOException("interrupted while acquiring the backend lock", e);
