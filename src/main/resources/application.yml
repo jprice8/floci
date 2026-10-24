@@ -43,6 +43,12 @@ quarkus:
     # Enables the pre-shutdown phase so stop hooks run before the HTTP server stops.
     # No 'delay' value is set - observers run synchronously, no artificial sleep is introduced.
     delay-enabled: true
+  virtual-threads:
+    # AWS JSON 1.0, CBOR, Query, Invoke and function URL requests run on virtual threads (see
+    # AwsJsonController), long polls among them. At shutdown, interrupt any still running after
+    # 10 s, the interval Quarkus uses for worker threads, instead of its default minute.
+    # Fixed at build time.
+    shutdown-timeout: 10s
   index-dependency:
     swagger-models-v2:
       group-id: io.swagger
