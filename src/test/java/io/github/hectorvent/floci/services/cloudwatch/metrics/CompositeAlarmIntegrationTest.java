@@ -145,6 +145,31 @@ class CompositeAlarmIntegrationTest {
                         + "except MaxRecords and NextToken.");
     }
 
+    // AWS sends each of the three alarm collections once, empty or not. A second, empty
+    // CompositeAlarms after the filled one hides the composite alarms from a client that keeps the
+    // last value it reads.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void describeAlarmsSendsEachCollectionOnce(boolean json) {
+        String child = unique("once-child");
+        String parent = unique("once-parent");
+        putMetricAlarm(json, child);
+        putComposite(json, parent, "ALARM(" + child + ")");
+
+        Map<String, Object> both = Map.of("AlarmNames", List.of(child, parent),
+                "AlarmTypes", List.of("MetricAlarm", "CompositeAlarm"));
+        Response response = call(json, "DescribeAlarms", both);
+        response.then().statusCode(200);
+        String body = response.asString();
+        for (String collection : List.of("CompositeAlarms", "MetricAlarms", "LogAlarms")) {
+            String marker = json ? "\"" + collection + "\"" : "<" + collection + ">";
+            assertEquals(1, occurrences(body, marker), collection + " in " + body);
+        }
+        assertEquals(List.of(parent), describe(json, both, "CompositeAlarms"));
+        assertEquals(List.of(child), describe(json, both, "MetricAlarms"));
+        assertEquals(List.of(), describe(json, both, "LogAlarms"));
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void invalidRulesAndUnknownChildrenStoreNothing(boolean json) {
@@ -254,6 +279,14 @@ class CompositeAlarmIntegrationTest {
         });
         return given().contentType("application/x-www-form-urlencoded").header("Authorization", SCOPE)
                 .formParams(form).post("/");
+    }
+
+    private static int occurrences(String text, String marker) {
+        int count = 0;
+        for (int at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + marker.length())) {
+            count++;
+        }
+        return count;
     }
 
     private static String unique(String label) {

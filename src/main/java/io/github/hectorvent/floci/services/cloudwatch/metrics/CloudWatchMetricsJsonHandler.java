@@ -298,7 +298,6 @@ public class CloudWatchMetricsJsonHandler {
             if (a.getTreatMissingData() != null) node.put("TreatMissingData", a.getTreatMissingData());
             putAlarmState(node, a);
         }
-        response.putArray("CompositeAlarms");
         response.putArray("LogAlarms");
         return Response.ok(response).build();
     }

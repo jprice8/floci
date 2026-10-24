@@ -281,9 +281,7 @@ public class CloudWatchMetricsQueryHandler {
         for (MetricAlarm a : described.metricAlarms()) {
             toAlarmXml(xml, a);
         }
-        xml.end("MetricAlarms");
-        xml.start("CompositeAlarms").end("CompositeAlarms");
-        xml.start("LogAlarms").end("LogAlarms");
+        xml.end("MetricAlarms").start("LogAlarms").end("LogAlarms");
         return Response.ok(AwsQueryResponse.envelope("DescribeAlarms", null, xml.build())).build();
     }
 
