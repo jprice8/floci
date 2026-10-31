@@ -1317,11 +1317,12 @@ public class EmrService implements Resettable {
             List<String> command = application == null ? EmrSparkSteps.command(step) : null;
             SparkJobRunner.Job job = application == null && command == null ? null
                     : new SparkJobRunner.Job(SERVICE, step.getId(), accountId, region, cluster.getReleaseLabel(),
-                    cluster.getBootstrapImage() != null ? cluster.getBootstrapImage() : imageTemplate,
+                    cluster.getBootstrapImage() != null ? cluster.getBootstrapImage() : imageTemplate, null,
                     dockerNetwork, executionRole(cluster, step, accountId),
                     EmrSparkSteps.sparkDefaults(cluster.getConfigurations(), SNAPSHOT_MAPPER),
                     application != null ? application : List.of(), command, Duration.ZERO,
-                    EmrSparkSteps.logFolder(cluster, step), null);
+                    EmrSparkSteps.logFolder(cluster, step), null,
+                    EmrSparkSteps.sparkEnvironment(cluster.getConfigurations(), SNAPSHOT_MAPPER));
             StepLaunch launch = new StepLaunch(accountId, region, cluster.getId(), step.getId(), generation);
             executing.add(stepKey(accountId, step.getId()));
             stepExecutor.execute(() -> runStep(job, launch));

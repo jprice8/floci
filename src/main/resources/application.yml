@@ -536,6 +536,8 @@ floci:
       automated-snapshots-enabled: true
       cloudwatch-metrics-enabled: true
       snapshot-sweep-interval-seconds: 60
+      snapshot-copy-enabled: true
+      snapshot-copy-sweep-interval-seconds: 60
       default-port: 5439
       image-version: postgres:15-alpine
       poll-interval-ms: 1000
@@ -585,6 +587,8 @@ floci:
       enabled: true
       snapshot-expiration-enabled: ${FLOCI_SERVICES_REDSHIFT_SERVERLESS_SNAPSHOT_EXPIRATION_ENABLED:true}
       snapshot-expiration-sweep-interval-seconds: ${FLOCI_SERVICES_REDSHIFT_SERVERLESS_SNAPSHOT_EXPIRATION_SWEEP_INTERVAL_SECONDS:60}
+      snapshot-copy-enabled: ${FLOCI_SERVICES_REDSHIFT_SERVERLESS_SNAPSHOT_COPY_ENABLED:true}
+      snapshot-copy-sweep-interval-seconds: ${FLOCI_SERVICES_REDSHIFT_SERVERLESS_SNAPSHOT_COPY_SWEEP_INTERVAL_SECONDS:60}
       scheduled-actions-enabled: ${FLOCI_SERVICES_REDSHIFT_SERVERLESS_SCHEDULED_ACTIONS_ENABLED:true}
       scheduled-action-sweep-interval-seconds: ${FLOCI_SERVICES_REDSHIFT_SERVERLESS_SCHEDULED_ACTION_SWEEP_INTERVAL_SECONDS:60}
     neptune:

@@ -236,7 +236,7 @@ Guests with an instance profile receive endpoint and region settings without Flo
 
 ### IMDS and SSM managed instances
 
-IMDS only knows about containers that Floci itself launched through `RunInstances`. That launch is what installs the link-local `169.254.169.254` proxy inside the container and maps the container's IP to its instance record.
+IMDS only knows about containers that Floci itself launched through `RunInstances`. That launch is what installs the link-local `169.254.169.254` proxy inside the container and maps the container's IP to its instance record. A restarted container (`StopInstances` then `StartInstances`) has a new network namespace, so once the instance is `running` `StartInstances` sets the proxy up again; an instance under security-group enforcement keeps its helper container's namespace, and the proxy with it.
 
 Registering a container with SSM is independent of this: an SSM agent that calls `UpdateInstanceInformation` becomes a managed instance, but that does not create an EC2 instance record, does not install the IMDS proxy, and does not register the container with IMDS. From such a container, `curl http://169.254.169.254/...` fails outright (no proxy), and a request sent straight to the host IMDS port returns `404` with a message explaining that no EC2 instance is registered for the source IP. Floci also logs a warning when an SSM agent registers from a container that is not backed by a Floci EC2 instance.
 
@@ -720,6 +720,8 @@ returns `Resource.AlreadyAssociated` rather than moving it — disassociate firs
 recorded on the attachment itself, which is why `GetTransitGatewayRouteTableAssociations` reports
 the attachment's VPC as the associated resource.
 
+A VPC attachment is propagated into the gateway's default propagation route table on creation when the gateway has `DefaultRouteTablePropagation` enabled, and leaves it when the attachment is deleted.
+
 Propagation is separate: one attachment may propagate into several route tables. Enabling twice
 returns `TransitGatewayRouteTablePropagation.Duplicate`. Unlike association, which reports
 `associating` and `disassociating`, propagation reports the settled `enabled` or `disabled` at
@@ -748,6 +750,21 @@ Route table ids follow the live API's own inconsistency: an id that does not exi
 | CreateNatGateway | Creates a NAT gateway record. |
 | DescribeNatGateways | Lists or returns stored NAT gateways. |
 | DeleteNatGateway | Deletes a NAT gateway record. |
+
+Every NAT gateway Floci creates is zonal: it sits in the subnet it was created in, and responses
+report `availabilityMode` as `zonal`. Regional NAT gateways are not supported: `CreateNatGateway` with
+`AvailabilityMode=regional` fails with `UnsupportedOperation`, and an `AWS::EC2::NatGateway` whose
+`AvailabilityMode` is `regional` fails with the reason `NAT gateways with AvailabilityMode regional
+are not supported.`
+
+`PrivateIpAddress` gives the gateway's interface that address instead of the next free one, on
+`CreateNatGateway` and on `AWS::EC2::NatGateway`, and `DescribeNetworkInterfaces` and
+`DescribeAddresses` report the same address. It follows the `RunInstances` rules: an address outside
+the subnet's CIDR, or one of the five AWS reserves, fails with `InvalidParameterValue`, and one that
+an instance, network interface, NAT gateway or interface endpoint already holds fails with
+`InvalidIPAddress.InUse`. A gateway has its primary address only, so the secondary-address
+parameters (`SecondaryAllocationIds`, `SecondaryPrivateIpAddresses` and
+`SecondaryPrivateIpAddressCount`) fail with `UnsupportedOperation` before anything is created.
 
 ### Capacity Reservations
 
@@ -948,10 +965,9 @@ request's, field by field: a request entry for a `DeviceName` the template maps,
 only one side maps apply as given. A request entry that makes the device something else, an EBS
 volume (`Ebs`), an instance store volume (`VirtualName`) or nothing (`NoDevice`), replaces the
 template's choice for it, an `Ebs` block still merging member by member into the template's. An
-Auto Scaling group launching from a template gets its mappings the same way; one launching from a
-launch configuration does not pass the configuration's mappings yet. CloudFormation does not pass
-them yet: an `AWS::EC2::Instance` launches without the `BlockDeviceMappings` it or its launch
-template declares, and an `AWS::EC2::LaunchTemplate` or
+Auto Scaling group launching from a template or a launch configuration gets its mappings the same
+way. CloudFormation does not pass them yet: an `AWS::EC2::Instance` launches without the
+`BlockDeviceMappings` it or its launch template declares, and an `AWS::EC2::LaunchTemplate` or
 `AWS::AutoScaling::LaunchConfiguration` stores none, so instances launched from what a stack
 creates get the AMI's devices alone. A mapping naming a `VolumeType` outside the service model's
 enum fails with `InvalidParameterValue`, as `ModifyVolume` does; one with `NoDevice` set creates no
@@ -1264,7 +1280,7 @@ State is reported settled rather than transitional, as elsewhere in this service
 | `FLOCI_SERVICES_EC2_VPC_NETWORKS_ENABLED` | `true` | Back each VPC with a real Docker network (see [VPC Docker networks](#vpc-docker-networks)) |
 | `FLOCI_SERVICES_EC2_VPC_NETWORKS_FALLBACK_POOL` | `10.240.0.0/12` | RFC 1918 pool that substituted CIDRs are drawn from |
 | `FLOCI_SERVICES_EC2_VPC_NETWORKS_FALLBACK_PREFIX_LENGTH` | `16` | Prefix length of each block handed out of that pool |
-| `FLOCI_SERVICES_EC2_VPC_NETWORKS_RECONCILE_ON_STARTUP` | `true` | Remove VPC networks left behind by a previous run of this same emulator |
+| `FLOCI_SERVICES_EC2_VPC_NETWORKS_RECONCILE_ON_STARTUP` | `true` | Remove VPC networks left behind by a previous run of this same emulator. Whatever its value, the network a previous run created for a VPC that still exists is kept, and goes when that VPC is deleted |
 | `FLOCI_SERVICES_EC2_VPC_NETWORKS_DRIVER` | `bridge` | Docker network driver used for VPC networks |
 
 ## VPC Docker networks

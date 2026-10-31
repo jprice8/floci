@@ -7,12 +7,15 @@ import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.StreamType;
 import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.config.EmulatorConfig.EcsServiceConfig.ImagePullBehavior;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.docker.ContainerBuilder;
 import io.github.hectorvent.floci.core.common.docker.ContainerLifecycleManager;
 import io.github.hectorvent.floci.core.common.docker.ContainerLogStreamer;
 import io.github.hectorvent.floci.core.common.docker.ContainerStorageHelper;
 import io.github.hectorvent.floci.core.common.docker.LaunchedContainerAwsEnv;
+import io.github.hectorvent.floci.services.ecr.registry.EcrRegistryManager;
+import io.github.hectorvent.floci.services.lambda.launcher.ImageCacheService.LaunchImage;
 import io.github.hectorvent.floci.services.lambda.launcher.LambdaExecutionRoleCredentials;
 import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.testing.MutableClock;
@@ -50,6 +53,7 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -63,6 +67,7 @@ class EmrServerlessSparkRunnerTest {
     private final SparkJobRunner.Progress progress = mock(SparkJobRunner.Progress.class);
     private final S3Service s3 = mock(S3Service.class);
     private final ContainerLogStreamer logStreamer = mock(ContainerLogStreamer.class);
+    private final EcrRegistryManager ecr = mock(EcrRegistryManager.class);
 
     @Test
     void sparkSubmitRunsLocallyOnFlocisS3ThenTheRunsOwnSettings() {
@@ -145,6 +150,31 @@ class EmrServerlessSparkRunnerTest {
         // Its JVMs trust Floci's CA, the trust store going in with the CA bundle as the container is created.
         verify(spec).withJavaTrustStore();
         verify(lifecycle, never()).copyJavaTrustStore(anyString());
+        // The release's image is not in an ECR repository, so it is pulled once, as the container is created.
+        verify(lifecycle, never()).resolveImageForLaunch(anyString(), any(), any());
+    }
+
+    @Test
+    void anImageInAnEcrRepositoryRunsFromFlocisRegistryPulledForEveryRun() {
+        ContainerBuilder builder = mock(ContainerBuilder.class);
+        ContainerBuilder.Builder spec = mock(ContainerBuilder.Builder.class, RETURNS_SELF);
+        String custom = "123456789012.dkr.ecr.eu-west-1.amazonaws.com/spark/custom:7.5.0";
+        String inFlocisRegistry = "localhost:5100/123456789012/eu-west-1/spark/custom:7.5.0";
+        String pulled = "sha256:" + "3".repeat(64);
+        when(builder.newContainer(anyString())).thenReturn(spec);
+        when(builder.resolveImage(inFlocisRegistry)).thenReturn(inFlocisRegistry);
+        when(ecr.rewriteImageUri(custom)).thenReturn(inFlocisRegistry);
+        when(lifecycle.resolveImageForLaunch(inFlocisRegistry, ImagePullBehavior.DEFAULT, null))
+                .thenReturn(new LaunchImage(pulled, "sha256:" + "4".repeat(64)));
+        EmrServerlessSparkRunner runner = runner(builder);
+
+        runner.run(customImageJob(custom), progress);
+        runner.run(customImageJob(custom), progress);
+
+        // By the id each pull resolved, which a push under the same tag cannot move.
+        verify(lifecycle, times(2)).resolveImageForLaunch(inFlocisRegistry, ImagePullBehavior.DEFAULT, null);
+        verify(builder, times(2)).newContainer(pulled);
+        verify(builder, never()).newContainer(custom);
     }
 
     @Test
@@ -167,6 +197,22 @@ class EmrServerlessSparkRunnerTest {
                         && file.endsWith("\nspark.executor.cores 4")));
         verify(spec, never()).withEntrypoint(List.of("/usr/lib/spark/bin/spark-submit"));
         verify(spec).withJavaTrustStore();
+        // The job's own variables, a cluster's spark-env exports, beside Floci's (none from this test's mock).
+        verify(spec).withEnv(List.of("PYSPARK_PYTHON=/usr/bin/python3.11"));
+    }
+
+    @Test
+    void aJobsVariablesFollowFlocisAndReplaceOneOfTheSameName() {
+        Map<String, String> jobs = new LinkedHashMap<>();
+        jobs.put("AWS_REGION", "us-east-1");
+        jobs.put("SPARK_DAEMON_JAVA_OPTS", "-Dkey=value -Xmx1g");
+
+        assertEquals(List.of("AWS_REGION=us-east-1", "AWS_ENDPOINT_URL=http://floci:4566",
+                        "SPARK_DAEMON_JAVA_OPTS=-Dkey=value -Xmx1g"),
+                EmrServerlessSparkRunner.environment(
+                        List.of("AWS_REGION=eu-west-1", "AWS_ENDPOINT_URL=http://floci:4566"), jobs));
+        assertEquals(List.of("AWS_REGION=eu-west-1"),
+                EmrServerlessSparkRunner.environment(List.of("AWS_REGION=eu-west-1"), Map.of()));
     }
 
     @Test
@@ -511,7 +557,7 @@ class EmrServerlessSparkRunnerTest {
         when(docker.inspectContainerCmd("driver").exec().getState().getRunning()).thenReturn(false);
         when(docker.inspectContainerCmd("driver").exec().getState().getExitCodeLong()).thenReturn(0L);
         return new EmrServerlessSparkRunner(builder, lifecycle, logStreamer,
-                mock(LaunchedContainerAwsEnv.class), mock(LambdaExecutionRoleCredentials.class), s3, config,
+                mock(LaunchedContainerAwsEnv.class), mock(LambdaExecutionRoleCredentials.class), s3, ecr, config,
                 new MutableClock(), Duration.ZERO);
     }
 
@@ -579,13 +625,19 @@ class EmrServerlessSparkRunnerTest {
                                           Map<String, String> sparkDefaults, Duration timeout, String logFolder,
                                           SparkJobRunner.CloudWatchLogs cloudWatchLogs) {
         return new SparkJobRunner.Job("emr-serverless", "00f0000000000001", "123456789012", "eu-west-1", "emr-7.5.0",
-                imageTemplate, "floci-network", "arn:aws:iam::123456789012:role/job", sparkDefaults, application,
-                null, timeout, logFolder, cloudWatchLogs);
+                imageTemplate, null, "floci-network", "arn:aws:iam::123456789012:role/job", sparkDefaults,
+                application, null, timeout, logFolder, cloudWatchLogs, Map.of());
+    }
+
+    private static SparkJobRunner.Job customImageJob(String customImage) {
+        return new SparkJobRunner.Job("emr-serverless", "00f0000000000001", "123456789012", "eu-west-1", "emr-7.5.0",
+                null, customImage, "floci-network", "arn:aws:iam::123456789012:role/job", Map.of(),
+                List.of("s3://bucket/jobs/app.jar"), null, Duration.ZERO, null, null, Map.of());
     }
 
     private static SparkJobRunner.Job commandJob(List<String> command, Map<String, String> sparkDefaults) {
         return new SparkJobRunner.Job("emr", "s-1A2B3C4D5E6F7", "123456789012", "eu-west-1", "emr-7.5.0", null,
-                "floci-network", "arn:aws:iam::123456789012:role/job", sparkDefaults, List.of(), command,
-                Duration.ZERO, null, null);
+                null, "floci-network", "arn:aws:iam::123456789012:role/job", sparkDefaults, List.of(), command,
+                Duration.ZERO, null, null, Map.of("PYSPARK_PYTHON", "/usr/bin/python3.11"));
     }
 }
