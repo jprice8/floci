@@ -75,12 +75,13 @@ class CodePipelineServiceTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final CapturingStorageFactory storage = new CapturingStorageFactory();
+    private final LambdaService lambdaService = mock(LambdaService.class);
     private final CodePipelineService service = new CodePipelineService(
             storage,
             mapper,
             mock(CodeBuildService.class),
             mock(CodeDeployService.class),
-            mock(LambdaService.class),
+            lambdaService,
             mock(S3Service.class), configWithPollInterval(500L));
 
     @Test
@@ -1600,6 +1601,38 @@ class CodePipelineServiceTest {
             assertFalse(execution.isStopRequested());
         } finally {
             releaseApproval.countDown();
+            service.shutdown();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void queuedActionCannotRegisterAfterStopHasTraversedTheExecution(boolean abandon) throws Exception {
+        String pipeline = "stop-before-action-admission";
+        String executionId = "queued-execution";
+        try (ExecutorService workers = Executors.newSingleThreadExecutor()) {
+            JsonNode action = mapper.readTree("""
+                    {"name":"Invoke","actionTypeId":{"category":"Invoke","owner":"AWS","provider":"Lambda","version":"1"},
+                     "configuration":{"FunctionName":"function"}}
+                    """);
+            createExternalActionPipeline(service, pipeline, action.toString());
+            CodePipelineExecution execution = waitingExecution(storage, pipeline, executionId, 1, "External");
+            AtomicReference<Thread> worker = new AtomicReference<>();
+            Future<?> queued;
+            synchronized (execution) {
+                queued = workers.submit(() -> {
+                    worker.set(Thread.currentThread());
+                    service.runAction(new CodePipelinePipeline(), execution, "External", action);
+                });
+                ThreadStates.awaitBlockedOrDone(worker, queued);
+                assertFalse(queued.isDone());
+                stopExecution(service, pipeline, executionId, abandon);
+            }
+            queued.get(5, TimeUnit.SECONDS);
+            assertTrue(execution.getActionExecutions().isEmpty(), "No provider may be admitted after stop");
+            assertEquals("Stopping", execution.getStatus());
+            verify(lambdaService, never()).invoke(anyString(), anyString(), any(), any());
+        } finally {
             service.shutdown();
         }
     }

@@ -2073,8 +2073,8 @@ public class CodePipelineService implements StoredResourceArns {
         return !"Succeeded".equals(previousStatuses.get(action.path("name").asText()));
     }
 
-    private void runAction(CodePipelinePipeline pipeline, CodePipelineExecution execution,
-                           String stageName, JsonNode action) {
+    void runAction(CodePipelinePipeline pipeline, CodePipelineExecution execution,
+                   String stageName, JsonNode action) {
         ActionExecution state = new ActionExecution();
         state.setActionExecutionId(UUID.randomUUID().toString());
         state.setStageName(stageName);
@@ -2088,6 +2088,9 @@ public class CodePipelineService implements StoredResourceArns {
         state.setStartTime(now());
         state.setLastUpdateTime(state.getStartTime());
         synchronized (execution) {
+            if (execution.isStopRequested()) {
+                return;
+            }
             execution.getActionExecutions().add(state);
             putExecution(execution);
         }
